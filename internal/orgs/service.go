@@ -110,6 +110,38 @@ func (s *Service) SetActive(_ context.Context, name string) (config.Organization
 	return org, nil
 }
 
+func (s *Service) Remove(_ context.Context, name string) (config.Organization, error) {
+	cfg, err := s.configManager.Load()
+	if err != nil {
+		return config.Organization{}, err
+	}
+
+	normalizedName := strings.TrimSpace(name)
+	if normalizedName == "" {
+		return config.Organization{}, fmt.Errorf("organization name is required")
+	}
+
+	removed, ok := cfg.Organizations[normalizedName]
+	if !ok {
+		return config.Organization{}, fmt.Errorf("organization %q not found", normalizedName)
+	}
+	delete(cfg.Organizations, normalizedName)
+
+	if cfg.ActiveOrganization == normalizedName {
+		cfg.ActiveOrganization = ""
+		for candidate := range cfg.Organizations {
+			if cfg.ActiveOrganization == "" || candidate < cfg.ActiveOrganization {
+				cfg.ActiveOrganization = candidate
+			}
+		}
+	}
+
+	if err := s.configManager.Save(cfg); err != nil {
+		return config.Organization{}, err
+	}
+	return removed, nil
+}
+
 func defaultMasterKeyBackend() string {
 	if runtime.GOOS == "darwin" {
 		return "keychain"

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func TestModelFilter(t *testing.T) {
@@ -48,6 +49,111 @@ func TestModelViewContainsStatusRowsAndHelp(t *testing.T) {
 	for _, want := range []string{"dot-vault", "api", ".env", "missing", "j/k move"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() missing %q in %q", want, view)
+		}
+	}
+}
+
+func TestModelViewShowsDependencyWarnings(t *testing.T) {
+	t.Parallel()
+
+	model := NewDashboardModelWithDependencies(
+		[]Org{{Name: "acme", Active: true}},
+		[]Dependency{{Name: "git", Required: true, Available: false, Detail: "required for clone"}},
+		[]Row{{Organization: "acme", Repo: "api", EnvFile: ".env"}},
+		Actions{},
+	)
+	model.width = 100
+	model.height = 24
+
+	view := model.View()
+	for _, want := range []string{"DEPENDENCIES", "git", "missing", "dependency warning"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("View() missing %q in %q", want, view)
+		}
+	}
+}
+
+func TestFixedColumnsUsesVisibleWidthsForStyledCells(t *testing.T) {
+	t.Parallel()
+
+	line := fixedColumns(
+		72,
+		"api",
+		".env",
+		"missing",
+		"yes",
+		"backup_due",
+		"never",
+		"changed",
+	)
+
+	if got := lipgloss.Width(line); got != 72 {
+		t.Fatalf("fixedColumns visible width = %d, want 72; line = %q", got, line)
+	}
+}
+
+func TestTableLayoutGrowsDriftAndGitWithExtraWidth(t *testing.T) {
+	t.Parallel()
+
+	base := tableLayout(109)
+	wide := tableLayout(129)
+
+	if wide.repo != base.repo || wide.env != base.env || wide.backup != base.backup || wide.backupAt != base.backupAt || wide.compare != base.compare {
+		t.Fatalf("non status columns changed with extra width: base=%#v wide=%#v", base, wide)
+	}
+	if wide.drift <= base.drift {
+		t.Fatalf("wide drift width = %d, want greater than %d", wide.drift, base.drift)
+	}
+	if wide.git <= base.git {
+		t.Fatalf("wide git width = %d, want greater than %d", wide.git, base.git)
+	}
+}
+
+func TestPanelsFillAvailableWidth(t *testing.T) {
+	t.Parallel()
+
+	model := NewDashboardModel(
+		[]Org{{Name: "acme", Active: true}},
+		[]Row{{Organization: "acme", Repo: "api", EnvFile: ".env", DriftStatus: "clean", BackupStatus: "backed_up"}},
+		Actions{},
+	)
+
+	for _, width := range []int{76, 96, 120} {
+		assertRenderedBlockWidth(t, "renderPanels", model.renderPanels(width), width)
+		assertRenderedBlockWidth(t, "renderDetail", model.renderDetail(width), width)
+	}
+}
+
+func TestModelViewFitsWindowWidth(t *testing.T) {
+	t.Parallel()
+
+	model := NewDashboardModel(
+		[]Org{{Name: "acme", Active: true}},
+		[]Row{{Organization: "acme", Repo: "api", EnvFile: ".env", DriftStatus: "clean", BackupStatus: "backed_up"}},
+		Actions{},
+	)
+	model.width = 100
+	model.height = 24
+
+	if got := lipgloss.Width(model.View()); got != model.width {
+		t.Fatalf("View() visible width = %d, want %d", got, model.width)
+	}
+	for index, line := range strings.Split(model.View(), "\n") {
+		if got := lipgloss.Width(line); got > model.width {
+			t.Fatalf("View() line %d width = %d, want <= %d; line = %q", index, got, model.width, line)
+		}
+	}
+}
+
+func assertRenderedBlockWidth(t *testing.T, name string, block string, width int) {
+	t.Helper()
+
+	if got := lipgloss.Width(block); got != width {
+		t.Fatalf("%s(%d) visible width = %d", name, width, got)
+	}
+	for index, line := range strings.Split(block, "\n") {
+		if got := lipgloss.Width(line); got != width {
+			t.Fatalf("%s(%d) line %d width = %d; line = %q", name, width, index, got, line)
 		}
 	}
 }
@@ -209,6 +315,120 @@ func TestModelUnlockCanBeCancelled(t *testing.T) {
 	}
 	if model.statusMessage != "unlock cancelled" {
 		t.Fatalf("statusMessage = %q, want unlock cancelled", model.statusMessage)
+	}
+}
+
+func TestModelSelectsOrganizationFromFocusedPanel(t *testing.T) {
+	t.Parallel()
+
+	selected := ""
+	model := NewDashboardModel([]Org{
+		{Name: "acme", Active: true},
+		{Name: "other"},
+	}, []Row{{Organization: "acme", Repo: "api", EnvFile: ".env"}}, Actions{
+		SelectOrg: func(org string) ([]Org, []Row, string, error) {
+			selected = org
+			return []Org{{Name: "acme"}, {Name: "other", Active: true}},
+				[]Row{{Organization: "other", Repo: "web", EnvFile: ".env"}},
+				"selected organization other",
+				nil
+		},
+	})
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyTab})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	model = updated.(Model)
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatalf("enter on organization panel did not return select command")
+	}
+
+	msg := cmd()
+	updated, _ = model.Update(msg)
+	model = updated.(Model)
+	if selected != "other" {
+		t.Fatalf("selected = %q, want other", selected)
+	}
+	if model.selectedOrgName() != "other" {
+		t.Fatalf("selectedOrgName() = %q, want other", model.selectedOrgName())
+	}
+	if model.rows[0].Organization != "other" {
+		t.Fatalf("row organization = %q, want other", model.rows[0].Organization)
+	}
+}
+
+func TestModelClonePromptsForURLAndRefreshes(t *testing.T) {
+	t.Parallel()
+
+	cloneCalled := false
+	model := NewModelWithActions([]Row{
+		{Organization: "acme", Repo: "missing", EnvFile: ".env", GitPresent: false},
+	}, Actions{
+		RefreshOrg: func(org string) ([]Row, error) {
+			return []Row{{Organization: org, Repo: "missing", EnvFile: ".env", GitPresent: true}}, nil
+		},
+		Clone: func(row Row, cloneURL string) (string, error) {
+			cloneCalled = true
+			if row.Repo != "missing" {
+				t.Fatalf("row.Repo = %q, want missing", row.Repo)
+			}
+			if cloneURL != "git@example.com:acme/missing.git" {
+				t.Fatalf("cloneURL = %q, want git@example.com:acme/missing.git", cloneURL)
+			}
+			return "cloned missing", nil
+		},
+	})
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	model = updated.(Model)
+	if !model.cloning {
+		t.Fatalf("cloning = false, want true")
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("git@example.com:acme/missing.git")})
+	model = updated.(Model)
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatalf("enter did not return clone command")
+	}
+
+	msg := cmd()
+	updated, _ = model.Update(msg)
+	model = updated.(Model)
+	if !cloneCalled {
+		t.Fatalf("clone action was not called")
+	}
+	if !model.rows[0].GitPresent {
+		t.Fatalf("GitPresent = false, want true after refresh")
+	}
+}
+
+func TestModelClonePrefillsStoredRemoteURL(t *testing.T) {
+	t.Parallel()
+
+	model := NewModelWithActions([]Row{
+		{
+			Organization: "acme",
+			Repo:         "missing",
+			EnvFile:      ".env",
+			GitPresent:   false,
+			RemoteURL:    "git@example.com:acme/missing.git",
+		},
+	}, Actions{
+		RefreshOrg: func(org string) ([]Row, error) {
+			return nil, nil
+		},
+		Clone: func(row Row, cloneURL string) (string, error) {
+			return "cloned", nil
+		},
+	})
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	model = updated.(Model)
+	if model.cloneInput != "git@example.com:acme/missing.git" {
+		t.Fatalf("cloneInput = %q, want stored remote URL", model.cloneInput)
 	}
 }
 

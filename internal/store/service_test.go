@@ -186,6 +186,40 @@ func TestMetadataDoesNotRequireMasterKey(t *testing.T) {
 	}
 }
 
+func TestListMetadataDoesNotRequireMasterKey(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	manager := newTestConfigManager(t, tempDir)
+	service := NewService(manager, fakeKeyProvider{
+		key: []byte("0123456789abcdef0123456789abcdef"),
+	})
+
+	for _, input := range []PutInput{
+		{Repository: "app-two", EnvFile: ".env", SourcePath: "/repos/app-two/.env", Plaintext: []byte("API_KEY=two\n")},
+		{Repository: "app-one", EnvFile: ".env.local", SourcePath: "/repos/app-one/.env.local", Plaintext: []byte("API_KEY=one\n")},
+	} {
+		if _, err := service.Put(context.Background(), input); err != nil {
+			t.Fatalf("Put() error = %v", err)
+		}
+	}
+
+	metadataOnlyService := NewService(manager, failingKeyProvider{})
+	records, err := metadataOnlyService.ListMetadata("")
+	if err != nil {
+		t.Fatalf("ListMetadata() error = %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("len(records) = %d, want 2", len(records))
+	}
+	if records[0].Repository != "app-one" || records[0].EnvFile != ".env.local" {
+		t.Fatalf("records[0] = %#v, want app-one/.env.local", records[0])
+	}
+	if records[1].Repository != "app-two" || records[1].EnvFile != ".env" {
+		t.Fatalf("records[1] = %#v, want app-two/.env", records[1])
+	}
+}
+
 func TestPutGetRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -214,6 +248,7 @@ func TestPutGetRoundTrip(t *testing.T) {
 		Repository: "app-one",
 		EnvFile:    ".env.production",
 		SourcePath: "/repos/app-one/.env.production",
+		RemoteURL:  "git@example.com:acme/app-one.git",
 		Plaintext:  []byte("API_KEY=super-secret\n"),
 	}
 	metadata, err := service.Put(context.Background(), input)
@@ -234,5 +269,8 @@ func TestPutGetRoundTrip(t *testing.T) {
 	}
 	if loadedMetadata.ContentFingerprint != metadata.ContentFingerprint {
 		t.Fatalf("fingerprint = %q, want %q", loadedMetadata.ContentFingerprint, metadata.ContentFingerprint)
+	}
+	if loadedMetadata.RemoteURL != input.RemoteURL {
+		t.Fatalf("RemoteURL = %q, want %q", loadedMetadata.RemoteURL, input.RemoteURL)
 	}
 }

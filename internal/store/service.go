@@ -37,6 +37,7 @@ type PutInput struct {
 	Repository   string
 	EnvFile      string
 	SourcePath   string
+	RemoteURL    string
 	Plaintext    []byte
 }
 
@@ -50,6 +51,7 @@ type BackupInput struct {
 	Organization string
 	Repository   string
 	EnvFile      string
+	RemoteURL    string
 }
 
 type BackupResult struct {
@@ -62,6 +64,7 @@ type Metadata struct {
 	Repository            string     `json:"repository"`
 	EnvFile               string     `json:"env_file"`
 	SourcePath            string     `json:"source_path"`
+	RemoteURL             string     `json:"remote_url,omitempty"`
 	LastImportedAt        time.Time  `json:"last_imported_at"`
 	LastBackupAt          *time.Time `json:"last_backup_at,omitempty"`
 	LastBackupFingerprint string     `json:"last_backup_fingerprint,omitempty"`
@@ -123,6 +126,7 @@ func (s *Service) Put(ctx context.Context, input PutInput) (Metadata, error) {
 		Repository:         repository,
 		EnvFile:            envFile,
 		SourcePath:         input.SourcePath,
+		RemoteURL:          strings.TrimSpace(input.RemoteURL),
 		LastImportedAt:     time.Now().UTC(),
 		ContentFingerprint: Fingerprint(input.Plaintext),
 		KeyVersion:         keyVersion,
@@ -131,6 +135,9 @@ func (s *Service) Put(ctx context.Context, input PutInput) (Metadata, error) {
 	if err == nil {
 		metadata.LastBackupAt = existingRecord.Metadata.LastBackupAt
 		metadata.LastBackupFingerprint = existingRecord.Metadata.LastBackupFingerprint
+		if metadata.RemoteURL == "" {
+			metadata.RemoteURL = existingRecord.Metadata.RemoteURL
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Metadata{}, err
 	}
@@ -233,6 +240,49 @@ func (s *Service) Metadata(input GetInput) (Metadata, error) {
 	return record.Metadata, nil
 }
 
+func (s *Service) ListMetadata(organization string) ([]Metadata, error) {
+	org, err := s.resolveOrganization(organization)
+	if err != nil {
+		return nil, err
+	}
+
+	reposDir := filepath.Join(org.StoreRoot, "repos")
+	var records []Metadata
+	err = filepath.WalkDir(reposDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".enc.json") {
+			return nil
+		}
+
+		payload, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read encrypted record %s: %w", path, err)
+		}
+		var record envelope
+		if err := json.Unmarshal(payload, &record); err != nil {
+			return fmt.Errorf("decode encrypted record %s: %w", path, err)
+		}
+		records = append(records, record.Metadata)
+		return nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list encrypted records: %w", err)
+	}
+
+	sort.Slice(records, func(i, j int) bool {
+		if records[i].Repository == records[j].Repository {
+			return records[i].EnvFile < records[j].EnvFile
+		}
+		return records[i].Repository < records[j].Repository
+	})
+	return records, nil
+}
+
 func (s *Service) Backup(_ context.Context, input BackupInput) (BackupResult, error) {
 	org, err := s.resolveOrganization(input.Organization)
 	if err != nil {
@@ -249,7 +299,16 @@ func (s *Service) Backup(_ context.Context, input BackupInput) (BackupResult, er
 		return BackupResult{}, err
 	}
 
+	if remoteURL := strings.TrimSpace(input.RemoteURL); remoteURL != "" {
+		record.Metadata.RemoteURL = remoteURL
+	}
+
 	if record.Metadata.LastBackupFingerprint == record.Metadata.ContentFingerprint {
+		if strings.TrimSpace(input.RemoteURL) != "" {
+			if err := s.writeEnvelope(s.recordPath(org.StoreRoot, repository, envFile), record); err != nil {
+				return BackupResult{}, err
+			}
+		}
 		return BackupResult{
 			Metadata: record.Metadata,
 			Created:  false,
@@ -307,6 +366,40 @@ func (s *Service) ListBackups(organization string, repository string, envFile st
 	}
 	sort.Strings(backups)
 	return backups, nil
+}
+
+func (s *Service) ResetBackups(organization string) (int, error) {
+	org, err := s.resolveOrganization(organization)
+	if err != nil {
+		return 0, err
+	}
+
+	records, err := s.ListMetadata(org.Name)
+	if err != nil {
+		return 0, err
+	}
+
+	reset := 0
+	for _, metadata := range records {
+		record, err := s.readEnvelope(org.StoreRoot, metadata.Repository, metadata.EnvFile)
+		if err != nil {
+			return reset, err
+		}
+		if record.Metadata.LastBackupAt == nil && record.Metadata.LastBackupFingerprint == "" {
+			continue
+		}
+		record.Metadata.LastBackupAt = nil
+		record.Metadata.LastBackupFingerprint = ""
+		if err := s.writeEnvelope(s.recordPath(org.StoreRoot, metadata.Repository, metadata.EnvFile), record); err != nil {
+			return reset, err
+		}
+		reset++
+	}
+
+	if err := os.RemoveAll(filepath.Join(org.StoreRoot, "backups")); err != nil {
+		return reset, fmt.Errorf("remove backups directory: %w", err)
+	}
+	return reset, nil
 }
 
 func (s *Service) resolveOrganization(name string) (config.Organization, error) {

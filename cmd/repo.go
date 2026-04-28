@@ -87,23 +87,25 @@ func newRepoStatusCommand(app *appContext) *cobra.Command {
 				return nil
 			}
 			for _, row := range rows {
-				if row.Missing {
+				if row.StoreMissing {
 					fmt.Fprintf(
 						cmd.OutOrStdout(),
-						"%s/%s: missing current=%s backup=none\n",
+						"%s/%s: missing current=%s git=%t backup=none\n",
 						row.Repo,
 						row.EnvFile,
 						row.CurrentAt,
+						row.GitPresent,
 					)
 					continue
 				}
 				fmt.Fprintf(
 					cmd.OutOrStdout(),
-					"%s/%s: %s %s imported=%s backup=%s current=%s\n",
+					"%s/%s: %s %s git=%t imported=%s backup=%s current=%s\n",
 					row.Repo,
 					row.EnvFile,
 					row.DriftStatus,
 					row.BackupStatus,
+					row.GitPresent,
 					row.ImportedAt,
 					row.BackupAt,
 					row.CurrentAt,
@@ -148,6 +150,7 @@ func newRepoImportCommand(app *appContext) *cobra.Command {
 						Repository:   repo.RelPath,
 						EnvFile:      envFile.Name,
 						SourcePath:   envFile.AbsPath,
+						RemoteURL:    gitRemoteURL(repo.AbsPath),
 						Plaintext:    payload,
 					})
 					if err != nil {
@@ -278,6 +281,7 @@ func newRepoBackupCommand(app *appContext) *cobra.Command {
 						Organization: orgName,
 						Repository:   repo.RelPath,
 						EnvFile:      envFile.Name,
+						RemoteURL:    gitRemoteURL(repo.AbsPath),
 					})
 					if errors.Is(err, os.ErrNotExist) {
 						missing++
@@ -401,21 +405,38 @@ func filterRepositories(repos []orgs.Repository, filter string) []orgs.Repositor
 }
 
 func safeRepoEnvPath(repoRoot string, repoPath string, envFile string) (string, error) {
-	cleanRepoPath := filepath.Clean(repoPath)
-	if cleanRepoPath == "." || cleanRepoPath == ".." || strings.HasPrefix(cleanRepoPath, "../") || filepath.IsAbs(cleanRepoPath) {
-		return "", fmt.Errorf("repo must be relative to the organization repo root")
-	}
 	if envFile == "" || filepath.Base(envFile) != envFile {
 		return "", fmt.Errorf("env-file must be a file name")
 	}
 
-	targetPath := filepath.Join(repoRoot, cleanRepoPath, envFile)
+	repoDir, err := safeRepoDirPath(repoRoot, repoPath)
+	if err != nil {
+		return "", err
+	}
+	targetPath := filepath.Join(repoDir, envFile)
 	relPath, err := filepath.Rel(repoRoot, targetPath)
 	if err != nil {
 		return "", fmt.Errorf("resolve restore path: %w", err)
 	}
 	if relPath == "." || relPath == ".." || strings.HasPrefix(relPath, "../") || filepath.IsAbs(relPath) {
 		return "", fmt.Errorf("restore target escapes organization repo root")
+	}
+	return targetPath, nil
+}
+
+func safeRepoDirPath(repoRoot string, repoPath string) (string, error) {
+	cleanRepoPath := filepath.Clean(repoPath)
+	if cleanRepoPath == "." || cleanRepoPath == ".." || strings.HasPrefix(cleanRepoPath, "../") || filepath.IsAbs(cleanRepoPath) {
+		return "", fmt.Errorf("repo must be relative to the organization repo root")
+	}
+
+	targetPath := filepath.Join(repoRoot, cleanRepoPath)
+	relPath, err := filepath.Rel(repoRoot, targetPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve repository path: %w", err)
+	}
+	if relPath == "." || relPath == ".." || strings.HasPrefix(relPath, "../") || filepath.IsAbs(relPath) {
+		return "", fmt.Errorf("repository target escapes organization repo root")
 	}
 	return targetPath, nil
 }

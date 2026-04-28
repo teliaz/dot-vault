@@ -1,3 +1,38 @@
-.tmp/
-*.test
+# Local development
 .codex
+.tmp/
+tmp/
+temp/
+
+# Build outputs and artifacts
+bin/
+build/
+dist/
+out/
+artifacts/
+
+# Local executables
+dot-vault
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go test, coverage, and profiling output
+*.test
+*.out
+coverage.*
+*.coverprofile
+cpu.prof
+mem.prof
+trace.out
+
+# Go workspace/vendor files
+go.work
+go.work.sum
+vendor/
+
+# Logs and OS/editor noise
+*.log
+.DS_Store
+Thumbs.db

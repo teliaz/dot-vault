@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/teliaz/dot-vault/internal/store"
@@ -26,6 +27,7 @@ func newStorePutCommand(app *appContext) *cobra.Command {
 	var envFile string
 	var sourcePath string
 	var fromFile string
+	var remoteURL string
 
 	cmd := &cobra.Command{
 		Use:   "put",
@@ -41,6 +43,7 @@ func newStorePutCommand(app *appContext) *cobra.Command {
 				Repository:   repo,
 				EnvFile:      envFile,
 				SourcePath:   sourcePath,
+				RemoteURL:    remoteURL,
 				Plaintext:    plaintext,
 			})
 			if err != nil {
@@ -48,6 +51,9 @@ func newStorePutCommand(app *appContext) *cobra.Command {
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "stored %s/%s\n", metadata.Repository, metadata.EnvFile)
+			if strings.TrimSpace(metadata.RemoteURL) != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "remote: %s\n", metadata.RemoteURL)
+			}
 			fmt.Fprintf(cmd.OutOrStdout(), "fingerprint: %s\n", metadata.ContentFingerprint)
 			fmt.Fprintf(cmd.OutOrStdout(), "imported at: %s\n", metadata.LastImportedAt.Format("2006-01-02T15:04:05Z07:00"))
 			return nil
@@ -59,6 +65,7 @@ func newStorePutCommand(app *appContext) *cobra.Command {
 	cmd.Flags().StringVar(&envFile, "env-file", "", "Env file name such as .env or .env.production")
 	cmd.Flags().StringVar(&sourcePath, "source-path", "", "Original repo path of the source env file")
 	cmd.Flags().StringVar(&fromFile, "from-file", "", "Plaintext file to encrypt and import")
+	cmd.Flags().StringVar(&remoteURL, "remote-url", "", "Optional Git remote URL for future clone/restore workflows")
 	_ = cmd.MarkFlagRequired("repo")
 	_ = cmd.MarkFlagRequired("env-file")
 	_ = cmd.MarkFlagRequired("source-path")
