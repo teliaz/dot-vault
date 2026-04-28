@@ -6,7 +6,12 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
+
+func init() {
+	lipgloss.SetColorProfile(termenv.ANSI256)
+}
 
 func TestModelFilter(t *testing.T) {
 	t.Parallel()
@@ -27,6 +32,44 @@ func TestModelFilter(t *testing.T) {
 	}
 	if model.rows[model.filtered[0]].Repo != "web" {
 		t.Fatalf("filtered row repo = %q, want web", model.rows[model.filtered[0]].Repo)
+	}
+}
+
+func TestModelShowsRepoOnlyRowsByDefaultAndTogglesEnvOnly(t *testing.T) {
+	t.Parallel()
+
+	model := NewModel([]Row{
+		{Repo: "api", EnvFile: ".env", DriftStatus: "clean", BackupStatus: "backed_up"},
+		{Repo: "docs", DriftStatus: "no_env", BackupStatus: "none", RepositoryOnly: true},
+	})
+
+	if len(model.filtered) != 2 {
+		t.Fatalf("len(filtered) = %d, want 2", len(model.filtered))
+	}
+	view := model.View()
+	if !strings.Contains(view, "docs") || !strings.Contains(view, "none") || !strings.Contains(view, "no_env") {
+		t.Fatalf("View() missing repo-only row: %q", view)
+	}
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	model = updated.(Model)
+	if model.showAllRepos {
+		t.Fatalf("showAllRepos = true, want false")
+	}
+	if len(model.filtered) != 1 {
+		t.Fatalf("len(filtered) = %d, want 1", len(model.filtered))
+	}
+	if model.rows[model.filtered[0]].Repo != "api" {
+		t.Fatalf("filtered repo = %q, want api", model.rows[model.filtered[0]].Repo)
+	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	model = updated.(Model)
+	if !model.showAllRepos {
+		t.Fatalf("showAllRepos = false, want true")
+	}
+	if len(model.filtered) != 2 {
+		t.Fatalf("len(filtered) = %d, want 2 after toggling back", len(model.filtered))
 	}
 }
 
@@ -89,6 +132,51 @@ func TestFixedColumnsUsesVisibleWidthsForStyledCells(t *testing.T) {
 
 	if got := lipgloss.Width(line); got != 72 {
 		t.Fatalf("fixedColumns visible width = %d, want 72; line = %q", got, line)
+	}
+}
+
+func TestSelectedRowStylesEveryCell(t *testing.T) {
+	t.Parallel()
+
+	line := fixedColumnsSelected(
+		96,
+		"api",
+		".env",
+		"clean",
+		"yes",
+		"backed_up",
+		"never",
+		"locked",
+	)
+
+	if got := lipgloss.Width(line); got != 96 {
+		t.Fatalf("selected row width = %d, want 96; line = %q", got, line)
+	}
+	if count := strings.Count(line, "48;5;24"); count < 7 {
+		t.Fatalf("selected row background applied %d times, want at least 7; line = %q", count, line)
+	}
+}
+
+func TestDependencyHeaderIsNotHighlightedWithOrgFocus(t *testing.T) {
+	t.Parallel()
+
+	model := NewDashboardModelWithDependencies(
+		[]Org{{Name: "acme", Active: true}},
+		[]Dependency{{Name: "git", Available: true}},
+		nil,
+		Actions{},
+	)
+	model.focus = "orgs"
+
+	lines := strings.Split(model.renderSidebar(24), "\n")
+	if len(lines) < 4 {
+		t.Fatalf("sidebar rendered too few lines: %q", strings.Join(lines, "\n"))
+	}
+	if !strings.Contains(lines[0], "48;5;24") {
+		t.Fatalf("organization header was not highlighted: %q", lines[0])
+	}
+	if strings.Contains(lines[3], "48;5;24") {
+		t.Fatalf("dependency header should not be highlighted: %q", lines[3])
 	}
 }
 
@@ -356,6 +444,116 @@ func TestModelSelectsOrganizationFromFocusedPanel(t *testing.T) {
 	}
 	if model.rows[0].Organization != "other" {
 		t.Fatalf("row organization = %q, want other", model.rows[0].Organization)
+	}
+}
+
+func TestModelShowsOrganizationHelpAndRunsOrgActions(t *testing.T) {
+	t.Parallel()
+
+	removed := ""
+	reset := ""
+	model := NewDashboardModel([]Org{
+		{Name: "acme", Active: true},
+	}, []Row{{Organization: "acme", Repo: "api", EnvFile: ".env"}}, Actions{
+		RemoveOrg: func(org string) ([]Org, []Row, string, error) {
+			removed = org
+			return nil, nil, "removed organization acme", nil
+		},
+		ResetOrg: func(org string) ([]Org, []Row, string, error) {
+			reset = org
+			return []Org{{Name: org, Active: true}}, []Row{{Organization: org, Repo: "api", EnvFile: ".env"}}, "reset backups", nil
+		},
+	})
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyTab})
+	model = updated.(Model)
+	if !strings.Contains(model.renderHelp(), "a add org") || !strings.Contains(model.renderHelp(), "R reset backups") {
+		t.Fatalf("org help missing organization shortcuts: %q", model.renderHelp())
+	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	model = updated.(Model)
+	if model.pendingAction != "remove organization" {
+		t.Fatalf("pendingAction = %q, want remove organization", model.pendingAction)
+	}
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatalf("confirm remove did not return command")
+	}
+	updated, _ = model.Update(cmd())
+	model = updated.(Model)
+	if removed != "acme" {
+		t.Fatalf("removed = %q, want acme", removed)
+	}
+
+	model = NewDashboardModel([]Org{{Name: "acme", Active: true}}, []Row{{Organization: "acme", Repo: "api", EnvFile: ".env"}}, model.actions)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyTab})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
+	model = updated.(Model)
+	updated, cmd = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatalf("confirm reset did not return command")
+	}
+	updated, _ = model.Update(cmd())
+	model = updated.(Model)
+	if reset != "acme" {
+		t.Fatalf("reset = %q, want acme", reset)
+	}
+	if model.statusMessage != "reset backups" {
+		t.Fatalf("statusMessage = %q, want reset backups", model.statusMessage)
+	}
+}
+
+func TestModelAddOrganizationUsesSetupFlow(t *testing.T) {
+	t.Parallel()
+
+	added := SetupInput{}
+	model := NewDashboardModel([]Org{{Name: "acme", Active: true}}, []Row{{Organization: "acme", Repo: "api", EnvFile: ".env"}}, Actions{
+		AddOrg: func(input SetupInput) ([]Org, []Row, string, error) {
+			added = input
+			return []Org{{Name: "acme"}, {Name: input.Name, Active: true}},
+				[]Row{{Organization: input.Name, Repo: "web", EnvFile: ".env"}},
+				"created organization other",
+				nil
+		},
+	})
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyTab})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	model = updated.(Model)
+	if !model.addingOrg {
+		t.Fatalf("addingOrg = false, want true")
+	}
+
+	for _, value := range []string{"other", "/repos/other", "/secrets/other", "correct horse battery staple"} {
+		updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(value)})
+		model = updated.(Model)
+		updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		model = updated.(Model)
+	}
+	cmd := func() tea.Msg { return nil }
+	if !model.addingOrg {
+		t.Fatalf("addingOrg ended before create command")
+	}
+	updated, actualCmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+	if actualCmd != nil {
+		cmd = actualCmd
+	}
+	if actualCmd == nil {
+		t.Fatalf("final enter did not return add organization command")
+	}
+	updated, _ = model.Update(cmd())
+	model = updated.(Model)
+	if added.Name != "other" {
+		t.Fatalf("added.Name = %q, want other", added.Name)
+	}
+	if model.selectedOrgName() != "other" {
+		t.Fatalf("selectedOrgName() = %q, want other", model.selectedOrgName())
 	}
 }
 

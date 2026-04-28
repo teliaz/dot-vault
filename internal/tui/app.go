@@ -24,19 +24,20 @@ type Dependency struct {
 }
 
 type Row struct {
-	Organization string
-	Repo         string
-	EnvFile      string
-	DriftStatus  string
-	BackupStatus string
-	ImportedAt   string
-	BackupAt     string
-	CurrentAt    string
-	RemoteURL    string
-	GitPresent   bool
-	EnvPresent   bool
-	StoreMissing bool
-	DiffSummary  string
+	Organization   string
+	Repo           string
+	EnvFile        string
+	DriftStatus    string
+	BackupStatus   string
+	ImportedAt     string
+	BackupAt       string
+	CurrentAt      string
+	RemoteURL      string
+	GitPresent     bool
+	EnvPresent     bool
+	StoreMissing   bool
+	RepositoryOnly bool
+	DiffSummary    string
 }
 
 type Actions struct {
@@ -66,6 +67,7 @@ type Model struct {
 	width         int
 	height        int
 	filter        string
+	showAllRepos  bool
 	typing        bool
 	unlocking     bool
 	unlockInput   string
@@ -141,6 +143,7 @@ func NewDashboardModelWithDependencies(orgs []Org, dependencies []Dependency, ro
 		dependencies: dependencies,
 		rows:         rows,
 		focus:        "files",
+		showAllRepos: true,
 		actions:      actions,
 	}
 	model.selectedOrg = selectedOrgIndex(model.orgs)
@@ -247,9 +250,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			return m.selectFocusedOrg()
 		case "/":
-			m.typing = true
+			if m.focus == "files" {
+				m.typing = true
+			}
+		case "e":
+			if m.focus == "files" {
+				m.toggleRepositoryOnlyRows()
+			}
 		case "u":
-			m.startUnlock()
+			if m.focus == "files" {
+				m.startUnlock()
+			}
 		case "a":
 			m.startAddOrg()
 		case "x":
@@ -263,9 +274,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			m.startAction("restore")
 		case "c":
-			m.startClone()
+			if m.focus == "files" {
+				m.startClone()
+			}
 		case "d":
-			return m.startDiff()
+			if m.focus == "files" {
+				return m.startDiff()
+			}
 		}
 	}
 	return m, nil
@@ -285,7 +300,7 @@ func (m Model) View() string {
 	var body strings.Builder
 	body.WriteString(titleStyle.Render("dot-vault"))
 	body.WriteString(" ")
-	body.WriteString(mutedStyle.Render(fmt.Sprintf("%d orgs  %d env files", len(m.orgs), len(m.rows))))
+	body.WriteString(mutedStyle.Render(fmt.Sprintf("%d orgs  %d repos  %d env files", len(m.orgs), m.repoCount(), m.envFileCount())))
 	if missing := m.missingRequiredDependencies(); missing > 0 {
 		body.WriteString(" ")
 		body.WriteString(missingStyle.Render(fmt.Sprintf("%d dependency warning(s)", missing)))
@@ -302,13 +317,17 @@ func (m Model) View() string {
 		body.WriteString(" ")
 		body.WriteString(cleanStyle.Render("comparison loaded"))
 	}
+	if !m.showAllRepos {
+		body.WriteString(" ")
+		body.WriteString(mutedStyle.Render("env files only"))
+	}
 	if m.statusMessage != "" {
 		body.WriteString("\n")
 		body.WriteString(mutedStyle.Render(m.statusMessage))
 	}
 	if m.pendingAction != "" {
 		body.WriteString("\n")
-		body.WriteString(warnStyle.Render(fmt.Sprintf("Confirm %s on selected env file? y/n", m.pendingAction)))
+		body.WriteString(warnStyle.Render(m.confirmationPrompt()))
 	}
 	if m.unlocking {
 		body.WriteString("\n")
@@ -320,13 +339,31 @@ func (m Model) View() string {
 	}
 	body.WriteString("\n\n")
 
-	body.WriteString(m.renderPanels(contentWidth))
-	body.WriteString("\n")
-	body.WriteString(m.renderDetail(contentWidth))
-	body.WriteString("\n")
+	if m.addingOrg {
+		body.WriteString(m.renderAddOrg(contentWidth))
+		body.WriteString("\n")
+	} else {
+		body.WriteString(m.renderPanels(contentWidth))
+		body.WriteString("\n")
+		body.WriteString(m.renderDetail(contentWidth))
+		body.WriteString("\n")
+	}
 	body.WriteString(m.renderHelp())
 
 	return appStyle.Width(contentWidth).Render(body.String())
+}
+
+func (m Model) confirmationPrompt() string {
+	switch m.pendingAction {
+	case "remove organization", "reset organization backups":
+		name := "selected organization"
+		if len(m.orgs) > 0 && m.selectedOrg < len(m.orgs) {
+			name = m.orgs[m.selectedOrg].Name
+		}
+		return fmt.Sprintf("Confirm %s for %s? y/n", m.pendingAction, name)
+	default:
+		return fmt.Sprintf("Confirm %s on selected env file? y/n", m.pendingAction)
+	}
 }
 
 func (m Model) updateDiffView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -512,8 +549,13 @@ func (m *Model) startAction(action string) {
 		m.statusMessage = "focus env files before running file actions"
 		return
 	}
-	if _, ok := m.selectedRow(); !ok {
+	row, ok := m.selectedRow()
+	if !ok {
 		m.statusMessage = "no selected env file"
+		return
+	}
+	if row.RepositoryOnly || row.EnvFile == "" {
+		m.statusMessage = "selected repository has no env file"
 		return
 	}
 	if !m.hasAction(action) {
@@ -575,6 +617,16 @@ func (m *Model) startUnlock() {
 	m.unlocking = true
 	m.unlockInput = ""
 	m.statusMessage = ""
+}
+
+func (m *Model) toggleRepositoryOnlyRows() {
+	m.showAllRepos = !m.showAllRepos
+	m.applyFilter()
+	if m.showAllRepos {
+		m.statusMessage = "showing repositories without env files"
+		return
+	}
+	m.statusMessage = "showing env files only"
 }
 
 func newSetupFields() []setupField {
@@ -643,6 +695,10 @@ func (m Model) startDiff() (tea.Model, tea.Cmd) {
 		m.statusMessage = "no selected env file"
 		return m, nil
 	}
+	if row.RepositoryOnly || row.EnvFile == "" {
+		m.statusMessage = "selected repository has no env file"
+		return m, nil
+	}
 	if row.DriftStatus == "clean" {
 		m.statusMessage = "selected env file matches the encrypted store"
 		return m, nil
@@ -697,6 +753,26 @@ func (m Model) selectedOrgName() string {
 		return ""
 	}
 	return m.orgs[m.selectedOrg].Name
+}
+
+func (m Model) repoCount() int {
+	repos := map[string]struct{}{}
+	for _, row := range m.rows {
+		if row.Repo != "" {
+			repos[row.Repo] = struct{}{}
+		}
+	}
+	return len(repos)
+}
+
+func (m Model) envFileCount() int {
+	count := 0
+	for _, row := range m.rows {
+		if !row.RepositoryOnly && row.EnvFile != "" {
+			count++
+		}
+	}
+	return count
 }
 
 func (m *Model) toggleFocus() {
@@ -759,6 +835,9 @@ func (m *Model) applyFilter() {
 	m.filtered = m.filtered[:0]
 	filter := strings.ToLower(strings.TrimSpace(m.filter))
 	for index, row := range m.rows {
+		if row.RepositoryOnly && !m.showAllRepos {
+			continue
+		}
 		search := row.Organization + " " + row.Repo + " " + row.EnvFile + " " + row.DriftStatus + " " + row.BackupStatus + " " + row.DiffSummary + " " + row.RemoteURL
 		if filter == "" || strings.Contains(strings.ToLower(search), filter) {
 			m.filtered = append(m.filtered, index)
@@ -795,9 +874,38 @@ func (m Model) renderPanels(width int) string {
 	return style.Width(contentWidth).Render(body)
 }
 
+func (m Model) renderAddOrg(width int) string {
+	contentWidth := panelContentWidth(focusStyle, width)
+	var body strings.Builder
+	body.WriteString(headerStyle.Render("ADD ORGANIZATION"))
+	body.WriteString("\n")
+
+	for index, field := range m.setupFields {
+		value := field.value
+		if index == 3 && value != "" {
+			value = strings.Repeat("*", len([]rune(value)))
+		}
+		if value == "" {
+			value = mutedStyle.Render("required")
+		}
+		line := formatCell(fmt.Sprintf("%-22s %s", field.label, value), contentWidth)
+		if index == m.setupFocused {
+			line = selectedStyle.Render(line)
+		}
+		body.WriteString(line)
+		body.WriteString("\n")
+	}
+
+	return focusStyle.Width(contentWidth).Render(strings.TrimRight(body.String(), "\n"))
+}
+
 func (m Model) renderSidebar(width int) string {
 	var body strings.Builder
-	body.WriteString(headerStyle.Render(formatCell("ORGANIZATIONS", width)))
+	orgHeader := headerStyle.Render(formatCell("ORGANIZATIONS", width))
+	if m.focus == "orgs" {
+		orgHeader = selectedStyle.Render(formatCell("ORGANIZATIONS", width))
+	}
+	body.WriteString(orgHeader)
 	body.WriteString("\n")
 	if len(m.orgs) == 0 {
 		body.WriteString(mutedStyle.Render(formatCell("none configured", width)))
@@ -808,7 +916,7 @@ func (m Model) renderSidebar(width int) string {
 				mark = "*"
 			}
 			line := formatCell(fmt.Sprintf("%s %s", mark, org.Name), width)
-			if index == m.selectedOrg {
+			if index == m.selectedOrg && m.focus == "orgs" {
 				line = selectedStyle.Render(line)
 			}
 			body.WriteString(line)
@@ -818,7 +926,8 @@ func (m Model) renderSidebar(width int) string {
 		}
 	}
 	body.WriteString("\n\n")
-	body.WriteString(headerStyle.Render(formatCell("DEPENDENCIES", width)))
+	dependencyHeader := headerStyle.Render(formatCell("DEPENDENCIES", width))
+	body.WriteString(dependencyHeader)
 	body.WriteString("\n")
 	if len(m.dependencies) == 0 {
 		body.WriteString(mutedStyle.Render(formatCell("not checked", width)))
@@ -835,7 +944,11 @@ func (m Model) renderSidebar(width int) string {
 
 func (m Model) renderFilesContent(width int) string {
 	var body strings.Builder
-	body.WriteString(m.renderHeader(width))
+	header := m.renderHeader(width)
+	if m.focus == "files" {
+		header = selectedStyle.Render(fixedColumns(width, "REPOSITORY", "ENV", "DRIFT", "GIT", "REPO BACKUP", "LAST BACKUP", "COMPARE"))
+	}
+	body.WriteString(header)
 	body.WriteString("\n")
 	body.WriteString(m.renderRows(width))
 	return body.String()
@@ -866,15 +979,24 @@ func (m Model) renderRows(width int) string {
 		line := fixedColumns(
 			width,
 			row.Repo,
-			row.EnvFile,
+			row.envLabel(),
 			row.DriftStatus,
 			boolLabel(row.GitPresent),
 			row.BackupStatus,
 			row.BackupAt,
 			emptyAs(row.DiffSummary, "locked"),
 		)
-		if visibleIndex == m.selected {
-			line = selectedStyle.Render(line)
+		if visibleIndex == m.selected && m.focus == "files" {
+			line = fixedColumnsSelected(
+				width,
+				row.Repo,
+				row.envLabel(),
+				row.DriftStatus,
+				boolLabel(row.GitPresent),
+				row.BackupStatus,
+				row.BackupAt,
+				emptyAs(row.DiffSummary, "locked"),
+			)
 		}
 		lines = append(lines, line)
 	}
@@ -887,6 +1009,16 @@ func (m Model) renderDetail(width int) string {
 		return detailBoxStyle.Width(contentWidth).Render("No selected env file.")
 	}
 	row := m.rows[m.filtered[m.selected]]
+	if row.RepositoryOnly || row.EnvFile == "" {
+		detail := fmt.Sprintf(
+			"%s\norg: %s\ngit: %s  env: none\nremote: %s\ncurrent: no visible env files\nimported: never\nlast backup: never\ncomparison: no env file",
+			row.Repo,
+			emptyAs(row.Organization, "default"),
+			boolLabel(row.GitPresent),
+			emptyAs(row.RemoteURL, "unknown"),
+		)
+		return detailBoxStyle.Width(contentWidth).Render(detail)
+	}
 	detail := fmt.Sprintf(
 		"%s/%s\norg: %s\ngit: %s  env: %s\nremote: %s\ncurrent: %s\nimported: %s\nlast backup: %s\ncomparison: %s",
 		row.Repo,
@@ -901,6 +1033,13 @@ func (m Model) renderDetail(width int) string {
 		emptyAs(row.DiffSummary, "unlock to compare"),
 	)
 	return detailBoxStyle.Width(contentWidth).Render(detail)
+}
+
+func (r Row) envLabel() string {
+	if r.RepositoryOnly || r.EnvFile == "" {
+		return "none"
+	}
+	return r.EnvFile
 }
 
 func (m Model) renderDiff(width int) string {
@@ -926,10 +1065,16 @@ func (m Model) renderHelp() string {
 	if m.cloning {
 		return helpStyle.Render("enter clone  esc cancel  backspace edit")
 	}
+	if m.addingOrg {
+		return helpStyle.Render("enter next/create  tab move  ctrl+u clear  esc cancel")
+	}
 	if m.typing {
 		return helpStyle.Render("/ filtering  enter accept  esc cancel  backspace edit")
 	}
-	return helpStyle.Render("tab focus  enter select org  j/k move  / filter  u unlock/compare  d diff  i import  b backup  r restore  c clone  q quit")
+	if m.focus == "orgs" {
+		return helpStyle.Render("tab focus files  j/k move  enter select  a add org  x remove org  R reset backups  q quit")
+	}
+	return helpStyle.Render("tab focus  j/k move  / filter  e env-only/all repos  u unlock/compare  d diff  i import  b backup  r restore  c clone  q quit")
 }
 
 func (m Model) missingRequiredDependencies() int {
@@ -1018,6 +1163,47 @@ func runSelectOrg(selectOrg func(string) ([]Org, []Row, string, error), org stri
 	}
 }
 
+func runAddOrg(addOrg func(SetupInput) ([]Org, []Row, string, error), input SetupInput) tea.Cmd {
+	return func() tea.Msg {
+		orgs, rows, message, err := addOrg(input)
+		return setupDashboardResultMsg{
+			orgs:        orgs,
+			rows:        rows,
+			selectedOrg: input.Name,
+			message:     message,
+			err:         err,
+		}
+	}
+}
+
+func runOrgAction(action func(string) ([]Org, []Row, string, error), org string) tea.Cmd {
+	return func() tea.Msg {
+		if action == nil {
+			return actionResultMsg{err: fmt.Errorf("organization action is unavailable")}
+		}
+		orgs, rows, message, err := action(org)
+		return actionResultMsg{
+			orgs:        orgs,
+			rows:        rows,
+			selectedOrg: selectedOrgFromRows(orgs, rows),
+			message:     message,
+			err:         err,
+		}
+	}
+}
+
+func selectedOrgFromRows(orgs []Org, rows []Row) string {
+	for _, org := range orgs {
+		if org.Active {
+			return org.Name
+		}
+	}
+	if len(rows) > 0 {
+		return rows[0].Organization
+	}
+	return ""
+}
+
 func runUnlock(actions Actions, org string, passphrase string) tea.Cmd {
 	return func() tea.Msg {
 		if actions.UnlockOrg != nil {
@@ -1093,15 +1279,24 @@ type tableColumns struct {
 
 func fixedColumns(width int, repo string, env string, drift string, git string, backup string, backupAt string, compare string) string {
 	columns := tableLayout(width)
-	return formatColumns(columns, []string{
+	return formatColumns(columns, tableValues(repo, env, drift, git, backup, backupAt, compare), false)
+}
+
+func fixedColumnsSelected(width int, repo string, env string, drift string, git string, backup string, backupAt string, compare string) string {
+	columns := tableLayout(width)
+	return formatColumns(columns, tableValues(repo, env, drift, git, backup, backupAt, compare), true)
+}
+
+func tableValues(repo string, env string, drift string, git string, backup string, backupAt string, compare string) []string {
+	return []string{
 		repo,
 		env,
-		statusCell(drift, columns.drift),
+		drift,
 		git,
-		statusCell(backup, columns.backup),
+		backup,
 		emptyAsNever(backupAt),
 		compare,
-	})
+	}
 }
 
 func tableLayout(width int) tableColumns {
@@ -1153,17 +1348,34 @@ func tableWidth(columns tableColumns) int {
 	return columns.repo + columns.env + columns.drift + columns.git + columns.backup + columns.backupAt + columns.compare
 }
 
-func formatColumns(columns tableColumns, values []string) string {
+func formatColumns(columns tableColumns, values []string, selected bool) string {
 	widths := []int{columns.repo, columns.env, columns.drift, columns.git, columns.backup, columns.backupAt, columns.compare}
 	cells := make([]string, 0, len(widths))
 	for index, width := range widths {
-		cells = append(cells, formatCell(values[index], width))
+		cell := formatCell(values[index], width)
+		switch index {
+		case 2, 4:
+			cell = renderStatusCell(values[index], cell, selected)
+		default:
+			if selected {
+				cell = selectedStyle.Render(cell)
+			}
+		}
+		cells = append(cells, cell)
 	}
-	return strings.Join(cells, " ")
+	separator := " "
+	if selected {
+		separator = selectedStyle.Render(separator)
+	}
+	return strings.Join(cells, separator)
 }
 
-func statusCell(status string, width int) string {
-	return styleStatus(truncate(status, width))
+func renderStatusCell(status string, value string, selected bool) string {
+	style := statusStyle(status)
+	if selected {
+		style = style.Background(lipgloss.Color("24"))
+	}
+	return style.Render(value)
 }
 
 func formatCell(value string, width int) string {
@@ -1176,15 +1388,19 @@ func formatCell(value string, width int) string {
 }
 
 func styleStatus(status string) string {
+	return statusStyle(status).Render(status)
+}
+
+func statusStyle(status string) lipgloss.Style {
 	switch status {
 	case "clean", "backed_up":
-		return cleanStyle.Render(status)
+		return cleanStyle
 	case "drift", "backup_due", "env_missing":
-		return warnStyle.Render(status)
-	case "missing", "none", "repo_missing":
-		return missingStyle.Render(status)
+		return warnStyle
+	case "missing", "none", "repo_missing", "no_env":
+		return missingStyle
 	default:
-		return status
+		return lipgloss.NewStyle()
 	}
 }
 

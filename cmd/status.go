@@ -14,19 +14,20 @@ import (
 )
 
 type repoStatusRow struct {
-	Organization string
-	Repo         string
-	EnvFile      string
-	DriftStatus  string
-	BackupStatus string
-	ImportedAt   string
-	BackupAt     string
-	CurrentAt    string
-	RemoteURL    string
-	GitPresent   bool
-	EnvPresent   bool
-	StoreMissing bool
-	DiffSummary  string
+	Organization   string
+	Repo           string
+	EnvFile        string
+	DriftStatus    string
+	BackupStatus   string
+	ImportedAt     string
+	BackupAt       string
+	CurrentAt      string
+	RemoteURL      string
+	GitPresent     bool
+	EnvPresent     bool
+	StoreMissing   bool
+	RepositoryOnly bool
+	DiffSummary    string
 }
 
 func collectRepoStatusRows(ctx context.Context, app *appContext, orgName string, repoFilter string) ([]repoStatusRow, error) {
@@ -48,6 +49,22 @@ func collectRepoStatusRows(ctx context.Context, app *appContext, orgName string,
 
 	rowsByKey := map[string]repoStatusRow{}
 	for _, repo := range repos {
+		if len(repo.EnvFiles) == 0 {
+			rowsByKey[statusRowKey(repo.RelPath, "")] = repoStatusRow{
+				Organization:   org.Name,
+				Repo:           repo.RelPath,
+				EnvFile:        "",
+				DriftStatus:    "no_env",
+				BackupStatus:   "none",
+				CurrentAt:      "no env",
+				GitPresent:     true,
+				EnvPresent:     false,
+				StoreMissing:   true,
+				RepositoryOnly: true,
+			}
+			continue
+		}
+
 		for _, envFile := range repo.EnvFiles {
 			payload, err := os.ReadFile(envFile.AbsPath)
 			if err != nil {
@@ -95,6 +112,7 @@ func collectRepoStatusRows(ctx context.Context, app *appContext, orgName string,
 		if _, exists := rowsByKey[key]; exists {
 			continue
 		}
+		delete(rowsByKey, statusRowKey(metadata.Repository, ""))
 
 		row := repoStatusRow{
 			Organization: org.Name,
@@ -126,6 +144,9 @@ func collectRepoStatusRows(ctx context.Context, app *appContext, orgName string,
 	}
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].Repo == rows[j].Repo {
+			if rows[i].RepositoryOnly != rows[j].RepositoryOnly {
+				return !rows[i].RepositoryOnly
+			}
 			return rows[i].EnvFile < rows[j].EnvFile
 		}
 		return rows[i].Repo < rows[j].Repo

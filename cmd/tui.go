@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/teliaz/dot-vault/internal/config"
 	"github.com/teliaz/dot-vault/internal/diff"
 	"github.com/teliaz/dot-vault/internal/store"
 	"github.com/teliaz/dot-vault/internal/tui"
@@ -81,6 +82,68 @@ func newTUICommand(app *appContext) *cobra.Command {
 						return nil, nil, "", err
 					}
 					return orgRows, rows, fmt.Sprintf("selected organization %s", org.Name), nil
+				},
+				AddOrg: func(input tui.SetupInput) ([]tui.Org, []tui.Row, string, error) {
+					org, message, err := createOrganizationFromSetup(cmd, app, input)
+					if err != nil {
+						return nil, nil, "", err
+					}
+					selectedOrgName = org.Name
+					orgRows, err := collectTUIOrgs(app, selectedOrgName)
+					if err != nil {
+						return nil, nil, "", err
+					}
+					rows, err := refresh(selectedOrgName)
+					if err != nil {
+						return nil, nil, "", err
+					}
+					return orgRows, rows, message, nil
+				},
+				RemoveOrg: func(selected string) ([]tui.Org, []tui.Row, string, error) {
+					removed, err := app.orgService.Remove(cmd.Context(), selected)
+					if err != nil {
+						return nil, nil, "", err
+					}
+					cfg, err := app.configManager.Load()
+					if err != nil {
+						return nil, nil, "", err
+					}
+					selectedOrgName = cfg.ActiveOrganization
+					orgRows, err := collectTUIOrgs(app, selectedOrgName)
+					if err != nil {
+						return nil, nil, "", err
+					}
+					var rows []tui.Row
+					if selectedOrgName != "" {
+						rows, err = refresh(selectedOrgName)
+						if err != nil {
+							return nil, nil, "", err
+						}
+					}
+					return orgRows, rows, fmt.Sprintf("removed organization %s", removed.Name), nil
+				},
+				ResetOrg: func(selected string) ([]tui.Org, []tui.Row, string, error) {
+					org, err := app.orgService.ResolveOrganization(selected)
+					if err != nil {
+						return nil, nil, "", err
+					}
+					if err := app.authGate.Authorize(cmd.Context(), org, "backup"); err != nil {
+						return nil, nil, "", err
+					}
+					count, err := app.storeService.ResetBackups(selected)
+					if err != nil {
+						return nil, nil, "", err
+					}
+					selectedOrgName = selected
+					orgRows, err := collectTUIOrgs(app, selectedOrgName)
+					if err != nil {
+						return nil, nil, "", err
+					}
+					rows, err := refresh(selectedOrgName)
+					if err != nil {
+						return nil, nil, "", err
+					}
+					return orgRows, rows, fmt.Sprintf("reset backups for %s (%d records)", selected, count), nil
 				},
 				UnlockOrg: func(selected string, passphrase string) ([]tui.Row, string, error) {
 					org, err := app.orgService.ResolveOrganization(selected)
@@ -249,20 +312,8 @@ func runFirstRunSetupIfNeeded(cmd *cobra.Command, app *appContext) (string, erro
 
 	result, err := tui.RunSetup(cmd.OutOrStdout(), tui.SetupActions{
 		Create: func(input tui.SetupInput) (string, error) {
-			if err := app.keyProvider.SetPassphrase(input.Name, input.MasterPassphrase); err != nil {
-				return "", err
-			}
-			org, err := app.orgService.Add(cmd.Context(), input.Name, input.RepoRoot, input.StoreRoot, true)
-			if err != nil {
-				return "", err
-			}
-			if _, err := app.keyProvider.GetOrCreateMasterKey(cmd.Context(), org.Name); err != nil {
-				return "", err
-			}
-			if err := app.authGate.Authorize(cmd.Context(), org, "restore"); err != nil {
-				return "", err
-			}
-			return fmt.Sprintf("created organization %s", org.Name), nil
+			_, message, err := createOrganizationFromSetup(cmd, app, input)
+			return message, err
 		},
 	})
 	if err != nil {
@@ -274,23 +325,41 @@ func runFirstRunSetupIfNeeded(cmd *cobra.Command, app *appContext) (string, erro
 	return result.Input.Name, nil
 }
 
+func createOrganizationFromSetup(cmd *cobra.Command, app *appContext, input tui.SetupInput) (config.Organization, string, error) {
+	if err := app.keyProvider.SetPassphrase(input.Name, input.MasterPassphrase); err != nil {
+		return config.Organization{}, "", err
+	}
+	org, err := app.orgService.Add(cmd.Context(), input.Name, input.RepoRoot, input.StoreRoot, true)
+	if err != nil {
+		return config.Organization{}, "", err
+	}
+	if _, err := app.keyProvider.GetOrCreateMasterKey(cmd.Context(), org.Name); err != nil {
+		return config.Organization{}, "", err
+	}
+	if err := app.authGate.Authorize(cmd.Context(), org, "restore"); err != nil {
+		return config.Organization{}, "", err
+	}
+	return org, fmt.Sprintf("created organization %s", org.Name), nil
+}
+
 func toTUIRows(statusRows []repoStatusRow) []tui.Row {
 	rows := make([]tui.Row, 0, len(statusRows))
 	for _, row := range statusRows {
 		rows = append(rows, tui.Row{
-			Organization: row.Organization,
-			Repo:         row.Repo,
-			EnvFile:      row.EnvFile,
-			DriftStatus:  row.DriftStatus,
-			BackupStatus: row.BackupStatus,
-			ImportedAt:   row.ImportedAt,
-			BackupAt:     row.BackupAt,
-			CurrentAt:    row.CurrentAt,
-			RemoteURL:    row.RemoteURL,
-			GitPresent:   row.GitPresent,
-			EnvPresent:   row.EnvPresent,
-			StoreMissing: row.StoreMissing,
-			DiffSummary:  row.DiffSummary,
+			Organization:   row.Organization,
+			Repo:           row.Repo,
+			EnvFile:        row.EnvFile,
+			DriftStatus:    row.DriftStatus,
+			BackupStatus:   row.BackupStatus,
+			ImportedAt:     row.ImportedAt,
+			BackupAt:       row.BackupAt,
+			CurrentAt:      row.CurrentAt,
+			RemoteURL:      row.RemoteURL,
+			GitPresent:     row.GitPresent,
+			EnvPresent:     row.EnvPresent,
+			StoreMissing:   row.StoreMissing,
+			RepositoryOnly: row.RepositoryOnly,
+			DiffSummary:    row.DiffSummary,
 		})
 	}
 	return rows

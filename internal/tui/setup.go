@@ -52,12 +52,7 @@ var focusedFieldStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("230")).Ba
 
 func NewSetupModel(actions SetupActions) SetupModel {
 	return SetupModel{
-		fields: []setupField{
-			{label: "Organization"},
-			{label: "Repository root"},
-			{label: "Encrypted store root"},
-			{label: "Master passphrase"},
-		},
+		fields:  newSetupFields(),
 		actions: actions,
 	}
 }

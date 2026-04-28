@@ -113,3 +113,49 @@ func TestCollectRepoStatusRowsIncludesStoredRecordsWithoutCheckout(t *testing.T)
 		t.Fatalf("stored missing repository row was not included: %#v", rows)
 	}
 }
+
+func TestCollectRepoStatusRowsIncludesRepositoriesWithoutEnvFiles(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	repoRoot := filepath.Join(tempDir, "repos")
+	storeRoot := filepath.Join(tempDir, "store")
+	configPath := filepath.Join(tempDir, "config.json")
+	if err := os.MkdirAll(filepath.Join(repoRoot, "empty-repo", ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir empty repo: %v", err)
+	}
+
+	manager := config.NewManagerWithPath(configPath)
+	if err := manager.Save(&config.Config{
+		Version:            1,
+		ActiveOrganization: "acme",
+		Organizations: map[string]config.Organization{
+			"acme": {Name: "acme", RepoRoot: repoRoot, StoreRoot: storeRoot},
+		},
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	app := &appContext{
+		configManager: manager,
+		orgService:    orgs.NewService(manager),
+		storeService:  store.NewService(manager, crypto.NewKeyProvider("dot-vault-test")),
+	}
+	rows, err := collectRepoStatusRows(context.Background(), app, "acme", "")
+	if err != nil {
+		t.Fatalf("collectRepoStatusRows() error = %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("len(rows) = %d, want 1: %#v", len(rows), rows)
+	}
+	row := rows[0]
+	if !row.RepositoryOnly {
+		t.Fatalf("RepositoryOnly = false, want true")
+	}
+	if row.Repo != "empty-repo" || row.EnvFile != "" {
+		t.Fatalf("row = %#v, want empty-repo with blank env", row)
+	}
+	if row.DriftStatus != "no_env" {
+		t.Fatalf("DriftStatus = %q, want no_env", row.DriftStatus)
+	}
+}

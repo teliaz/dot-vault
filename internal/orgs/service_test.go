@@ -112,3 +112,44 @@ func TestSetActiveOrganization(t *testing.T) {
 		t.Fatalf("active org = %q, want other", cfg.ActiveOrganization)
 	}
 }
+
+func TestRemoveOrganizationPromotesNextActive(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	repoRoot := filepath.Join(tempDir, "repos")
+	if err := os.MkdirAll(repoRoot, 0o755); err != nil {
+		t.Fatalf("mkdir repo root: %v", err)
+	}
+
+	manager := config.NewManagerWithPath(filepath.Join(tempDir, "config.json"))
+	if err := manager.Save(&config.Config{
+		Version:            1,
+		ActiveOrganization: "beta",
+		Organizations: map[string]config.Organization{
+			"acme": {Name: "acme", RepoRoot: repoRoot, StoreRoot: filepath.Join(tempDir, "store-acme")},
+			"beta": {Name: "beta", RepoRoot: repoRoot, StoreRoot: filepath.Join(tempDir, "store-beta")},
+		},
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	removed, err := NewService(manager).Remove(context.Background(), "beta")
+	if err != nil {
+		t.Fatalf("Remove() error = %v", err)
+	}
+	if removed.Name != "beta" {
+		t.Fatalf("removed.Name = %q, want beta", removed.Name)
+	}
+
+	cfg, err := manager.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if _, ok := cfg.Organizations["beta"]; ok {
+		t.Fatalf("removed organization still exists")
+	}
+	if cfg.ActiveOrganization != "acme" {
+		t.Fatalf("active org = %q, want acme", cfg.ActiveOrganization)
+	}
+}

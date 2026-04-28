@@ -129,6 +129,57 @@ func TestBackupRecreatesMissingBackupDirectory(t *testing.T) {
 	}
 }
 
+func TestResetBackupsRemovesSnapshotsAndMarksRecordsDue(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	manager := newTestConfigManager(t, tempDir)
+	service := NewService(manager, fakeKeyProvider{
+		key: []byte("0123456789abcdef0123456789abcdef"),
+	})
+
+	if _, err := service.Put(context.Background(), PutInput{
+		Repository: "app-one",
+		EnvFile:    ".env",
+		SourcePath: "/repos/app-one/.env",
+		Plaintext:  []byte("API_KEY=one\n"),
+	}); err != nil {
+		t.Fatalf("Put() error = %v", err)
+	}
+	backup, err := service.Backup(context.Background(), BackupInput{
+		Repository: "app-one",
+		EnvFile:    ".env",
+	})
+	if err != nil {
+		t.Fatalf("Backup() error = %v", err)
+	}
+	if _, err := os.Stat(backup.BackupPath); err != nil {
+		t.Fatalf("backup file was not written: %v", err)
+	}
+
+	reset, err := service.ResetBackups("")
+	if err != nil {
+		t.Fatalf("ResetBackups() error = %v", err)
+	}
+	if reset != 1 {
+		t.Fatalf("reset = %d, want 1", reset)
+	}
+	if _, err := os.Stat(filepath.Join(tempDir, "store", "backups")); !os.IsNotExist(err) {
+		t.Fatalf("backups directory still exists, err=%v", err)
+	}
+
+	metadata, err := service.Metadata(GetInput{Repository: "app-one", EnvFile: ".env"})
+	if err != nil {
+		t.Fatalf("Metadata() error = %v", err)
+	}
+	if metadata.LastBackupAt != nil {
+		t.Fatalf("LastBackupAt = %v, want nil", metadata.LastBackupAt)
+	}
+	if metadata.LastBackupFingerprint != "" {
+		t.Fatalf("LastBackupFingerprint = %q, want empty", metadata.LastBackupFingerprint)
+	}
+}
+
 func newTestConfigManager(t *testing.T, tempDir string) *config.Manager {
 	t.Helper()
 
