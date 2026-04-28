@@ -95,6 +95,7 @@ var (
 	warnStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 	missingStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
 	helpStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	helpKeyStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("230"))
 	detailBoxStyle = lipgloss.NewStyle().Border(lipgloss.NormalBorder()).BorderForeground(lipgloss.Color("238")).Padding(0, 1)
 )
 
@@ -1054,27 +1055,35 @@ func (m Model) renderDiff(width int) string {
 
 func (m Model) renderHelp() string {
 	if m.diffView != "" {
-		return helpStyle.Render("esc close diff  q quit")
+		return helpItems("esc", "close diff", "q", "quit")
 	}
 	if m.pendingAction != "" {
-		return helpStyle.Render("y confirm  n cancel  esc cancel")
+		return helpItems("y", "confirm", "n", "cancel", "esc", "cancel")
 	}
 	if m.unlocking {
-		return helpStyle.Render("enter unlock  esc cancel  backspace edit")
+		return helpItems("enter", "unlock", "esc", "cancel", "backspace", "edit")
 	}
 	if m.cloning {
-		return helpStyle.Render("enter clone  esc cancel  backspace edit")
+		return helpItems("enter", "clone", "esc", "cancel", "backspace", "edit")
 	}
 	if m.addingOrg {
-		return helpStyle.Render("enter next/create  tab move  ctrl+u clear  esc cancel")
+		return helpItems("enter", "next/create", "tab", "move", "ctrl+u", "clear", "esc", "cancel")
 	}
 	if m.typing {
-		return helpStyle.Render("/ filtering  enter accept  esc cancel  backspace edit")
+		return helpItems("/", "filtering", "enter", "accept", "esc", "cancel", "backspace", "edit")
 	}
 	if m.focus == "orgs" {
-		return helpStyle.Render("tab focus files  j/k move  enter select  a add org  x remove org  R reset backups  q quit")
+		return helpItems("tab", "focus files", "j/k", "move", "enter", "select", "a", "add org", "x", "remove org", "R", "reset backups", "q", "quit")
 	}
-	return helpStyle.Render("tab focus  j/k move  / filter  e env-only/all repos  u unlock/compare  d diff  i import  b backup  r restore  c clone  q quit")
+	return helpItems("tab", "focus", "j/k", "move", "/", "filter", "e", "env-only/all repos", "u", "unlock/compare", "d", "diff", "i", "import", "b", "backup", "r", "restore", "c", "clone", "q", "quit")
+}
+
+func helpItems(parts ...string) string {
+	items := make([]string, 0, len(parts)/2)
+	for index := 0; index+1 < len(parts); index += 2 {
+		items = append(items, helpKeyStyle.Render(parts[index])+" "+helpStyle.Render(parts[index+1]))
+	}
+	return strings.Join(items, helpStyle.Render("  "))
 }
 
 func (m Model) missingRequiredDependencies() int {

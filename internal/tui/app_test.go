@@ -89,7 +89,7 @@ func TestModelViewContainsStatusRowsAndHelp(t *testing.T) {
 	model.height = 24
 
 	view := model.View()
-	for _, want := range []string{"dot-vault", "api", ".env", "missing", "j/k move"} {
+	for _, want := range []string{"dot-vault", "api", ".env", "missing", "j/k", "move"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() missing %q in %q", want, view)
 		}
@@ -177,6 +177,20 @@ func TestDependencyHeaderIsNotHighlightedWithOrgFocus(t *testing.T) {
 	}
 	if strings.Contains(lines[3], "48;5;24") {
 		t.Fatalf("dependency header should not be highlighted: %q", lines[3])
+	}
+}
+
+func TestHelpHighlightsShortcutKeys(t *testing.T) {
+	t.Parallel()
+
+	help := NewModel(nil).renderHelp()
+	for _, key := range []string{"tab", "j/k", "/", "e", "q"} {
+		if !strings.Contains(help, key) {
+			t.Fatalf("help missing key %q: %q", key, help)
+		}
+	}
+	if count := strings.Count(help, "38;5;230"); count < 5 {
+		t.Fatalf("help highlighted %d key tokens, want at least 5: %q", count, help)
 	}
 }
 
@@ -467,7 +481,7 @@ func TestModelShowsOrganizationHelpAndRunsOrgActions(t *testing.T) {
 
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyTab})
 	model = updated.(Model)
-	if !strings.Contains(model.renderHelp(), "a add org") || !strings.Contains(model.renderHelp(), "R reset backups") {
+	if !strings.Contains(model.renderHelp(), "a") || !strings.Contains(model.renderHelp(), "add org") || !strings.Contains(model.renderHelp(), "R") || !strings.Contains(model.renderHelp(), "reset backups") {
 		t.Fatalf("org help missing organization shortcuts: %q", model.renderHelp())
 	}
 
