@@ -73,6 +73,70 @@ func TestModelShowsRepoOnlyRowsByDefaultAndTogglesEnvOnly(t *testing.T) {
 	}
 }
 
+func TestModelShowsSuggestedEnvRows(t *testing.T) {
+	t.Parallel()
+
+	model := NewModel([]Row{
+		{
+			Repo:             "docs",
+			EnvFile:          ".env",
+			DriftStatus:      "env_suggested",
+			BackupStatus:     "none",
+			RepositoryOnly:   true,
+			EnvSuggestedFrom: ".env_sample",
+			DiffSummary:      "create from .env_sample",
+		},
+	})
+	model.width = 100
+	model.height = 24
+
+	view := model.View()
+	for _, want := range []string{"docs", ".env", "suggested", ".env_sample", "create .env from .env_sample"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("View() missing %q in %q", want, view)
+		}
+	}
+}
+
+func TestModelPageNavigationMovesByVisibleRows(t *testing.T) {
+	t.Parallel()
+
+	rows := make([]Row, 20)
+	for index := range rows {
+		rows[index] = Row{Repo: "repo-" + string(rune('a'+index)), EnvFile: ".env"}
+	}
+	model := NewModel(rows)
+	model.height = 24
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	model = updated.(Model)
+	if model.selected != 8 {
+		t.Fatalf("selected after pgdown = %d, want 8", model.selected)
+	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	model = updated.(Model)
+	if model.selected != 0 {
+		t.Fatalf("selected after pgup = %d, want 0", model.selected)
+	}
+
+	model.selected = 18
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	model = updated.(Model)
+	if model.selected != 19 {
+		t.Fatalf("selected after clamped pgdown = %d, want 19", model.selected)
+	}
+}
+
+func TestModelPageNavigationDoesNotChangeHelpToolbar(t *testing.T) {
+	t.Parallel()
+
+	help := NewModel(nil).renderHelp()
+	if strings.Contains(help, "pgup") || strings.Contains(help, "pgdown") {
+		t.Fatalf("help should not advertise page navigation: %q", help)
+	}
+}
+
 func TestModelViewContainsStatusRowsAndHelp(t *testing.T) {
 	t.Parallel()
 
@@ -157,6 +221,75 @@ func TestSelectedRowStylesEveryCell(t *testing.T) {
 	}
 }
 
+func TestSuggestedEnvRowCompareFitsCommonTableWidth(t *testing.T) {
+	t.Parallel()
+
+	row := Row{
+		Repo:             "docs",
+		EnvFile:          ".env",
+		DriftStatus:      "env_suggested",
+		BackupStatus:     "none",
+		RepositoryOnly:   true,
+		EnvSuggestedFrom: ".env_sample",
+	}
+	line := fixedColumns(
+		72,
+		row.Repo,
+		row.envLabel(),
+		row.driftLabel(),
+		boolLabel(row.GitPresent),
+		row.BackupStatus,
+		row.BackupAt,
+		row.compareLabel(),
+	)
+
+	if got := lipgloss.Width(line); got != 72 {
+		t.Fatalf("suggested row width = %d, want 72; line = %q", got, line)
+	}
+	if strings.Contains(line, "\n") {
+		t.Fatalf("suggested row rendered multiline: %q", line)
+	}
+	if !strings.Contains(line, "sample") {
+		t.Fatalf("suggested row compare label missing compact sample text: %q", line)
+	}
+	if strings.Contains(line, "from .env_sample") {
+		t.Fatalf("suggested row compare label should stay compact: %q", line)
+	}
+}
+
+func TestSuggestedEnvFirstSelectedRowFitsNarrowView(t *testing.T) {
+	t.Parallel()
+
+	model := NewDashboardModel(
+		[]Org{{Name: "acme", Active: true}},
+		[]Row{
+			{
+				Organization:     "acme",
+				Repo:             "docs",
+				EnvFile:          ".env",
+				DriftStatus:      "env_suggested",
+				BackupStatus:     "none",
+				RepositoryOnly:   true,
+				EnvSuggestedFrom: ".env_sample",
+			},
+			{Organization: "acme", Repo: "api", EnvFile: ".env", DriftStatus: "clean", BackupStatus: "backed_up"},
+		},
+		Actions{},
+	)
+	model.width = 88
+	model.height = 24
+
+	view := model.View()
+	for index, line := range strings.Split(view, "\n") {
+		if got := lipgloss.Width(line); got > model.width {
+			t.Fatalf("View() line %d width = %d, want <= %d; line = %q", index, got, model.width, line)
+		}
+	}
+	if !strings.Contains(view, "suggested") {
+		t.Fatalf("View() missing suggested row status: %q", view)
+	}
+}
+
 func TestDependencyHeaderIsNotHighlightedWithOrgFocus(t *testing.T) {
 	t.Parallel()
 
@@ -194,20 +327,35 @@ func TestHelpHighlightsShortcutKeys(t *testing.T) {
 	}
 }
 
-func TestTableLayoutGrowsDriftAndGitWithExtraWidth(t *testing.T) {
+func TestTableLayoutGrowsRepositoryAndLastBackupWithExtraWidth(t *testing.T) {
 	t.Parallel()
 
-	base := tableLayout(109)
-	wide := tableLayout(129)
+	base := tableLayout(110)
+	wide := tableLayout(130)
 
-	if wide.repo != base.repo || wide.env != base.env || wide.backup != base.backup || wide.backupAt != base.backupAt || wide.compare != base.compare {
-		t.Fatalf("non status columns changed with extra width: base=%#v wide=%#v", base, wide)
+	if wide.git != base.git || wide.compare != base.compare {
+		t.Fatalf("compact columns changed with extra width: base=%#v wide=%#v", base, wide)
 	}
-	if wide.drift <= base.drift {
-		t.Fatalf("wide drift width = %d, want greater than %d", wide.drift, base.drift)
+	if wide.repo <= base.repo {
+		t.Fatalf("wide repo width = %d, want greater than %d", wide.repo, base.repo)
 	}
-	if wide.git <= base.git {
-		t.Fatalf("wide git width = %d, want greater than %d", wide.git, base.git)
+	if wide.backupAt <= base.backupAt {
+		t.Fatalf("wide backupAt width = %d, want greater than %d", wide.backupAt, base.backupAt)
+	}
+	if base.env < 10 || wide.env < 16 {
+		t.Fatalf("env column widths too small: base=%#v wide=%#v", base, wide)
+	}
+	if wide.drift > 9 {
+		t.Fatalf("wide drift width = %d, want at most 9", wide.drift)
+	}
+}
+
+func TestTableLayoutShrinksToNarrowFilePane(t *testing.T) {
+	t.Parallel()
+
+	columns := tableLayout(51)
+	if got := tableWidth(columns) + 6; got > 51 {
+		t.Fatalf("table width = %d, want <= 51: %#v", got, columns)
 	}
 }
 

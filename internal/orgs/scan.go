@@ -14,10 +14,11 @@ import (
 )
 
 type Repository struct {
-	Name     string
-	RelPath  string
-	AbsPath  string
-	EnvFiles []EnvFile
+	Name           string
+	RelPath        string
+	AbsPath        string
+	EnvFiles       []EnvFile
+	SampleEnvFiles []EnvFile
 }
 
 type EnvFile struct {
@@ -79,11 +80,16 @@ func (s *Service) Scan(_ context.Context, organization string) ([]Repository, er
 		if err != nil {
 			return err
 		}
+		sampleEnvFiles, err := discoverSampleEnvFiles(repoRoot)
+		if err != nil {
+			return err
+		}
 		repoByPath[relPath] = Repository{
-			Name:     filepath.Base(repoRoot),
-			RelPath:  filepath.ToSlash(relPath),
-			AbsPath:  repoRoot,
-			EnvFiles: envFiles,
+			Name:           filepath.Base(repoRoot),
+			RelPath:        filepath.ToSlash(relPath),
+			AbsPath:        repoRoot,
+			EnvFiles:       envFiles,
+			SampleEnvFiles: sampleEnvFiles,
 		}
 
 		if entry.IsDir() {
@@ -140,12 +146,35 @@ func discoverEnvFiles(repoRoot string) ([]EnvFile, error) {
 			if entry.IsDir() {
 				continue
 			}
-			if matchesGitignoreEnvPattern(pattern, entry.Name()) {
+			if matchesGitignoreEnvPattern(pattern, entry.Name()) && !isSampleEnvFile(entry.Name()) {
 				candidates[entry.Name()] = entry
 			}
 		}
 	}
 
+	return envFilesFromCandidates(repoRoot, candidates)
+}
+
+func discoverSampleEnvFiles(repoRoot string) ([]EnvFile, error) {
+	entries, err := os.ReadDir(repoRoot)
+	if err != nil {
+		return nil, fmt.Errorf("read repo root: %w", err)
+	}
+
+	candidates := map[string]fs.DirEntry{}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if isSampleEnvFile(entry.Name()) {
+			candidates[entry.Name()] = entry
+		}
+	}
+
+	return envFilesFromCandidates(repoRoot, candidates)
+}
+
+func envFilesFromCandidates(repoRoot string, candidates map[string]fs.DirEntry) ([]EnvFile, error) {
 	envFiles := make([]EnvFile, 0, len(candidates))
 	for name, entry := range candidates {
 		info, err := entry.Info()
@@ -182,6 +211,39 @@ func isDefaultEnvFile(name string) bool {
 		}
 	}
 	return true
+}
+
+func isSampleEnvFile(name string) bool {
+	lowerName := strings.ToLower(name)
+	switch lowerName {
+	case ".env_sample", ".env-template", ".env-example", "sample.env", "example.env", "env.sample", "env.template":
+		return true
+	}
+	if !strings.HasPrefix(lowerName, ".env.") {
+		return false
+	}
+	for _, suffix := range []string{".example", ".sample", ".template"} {
+		if strings.HasSuffix(lowerName, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func SuggestedEnvFileName(sampleName string) string {
+	lowerName := strings.ToLower(sampleName)
+	switch lowerName {
+	case ".env_sample", ".env-template", ".env-example", "sample.env", "example.env", "env.sample", "env.template":
+		return ".env"
+	}
+	if strings.HasPrefix(lowerName, ".env.") {
+		for _, suffix := range []string{".example", ".sample", ".template"} {
+			if strings.HasSuffix(lowerName, suffix) {
+				return sampleName[:len(sampleName)-len(suffix)]
+			}
+		}
+	}
+	return ".env"
 }
 
 func readGitignoreEnvPatterns(repoRoot string) ([]string, error) {

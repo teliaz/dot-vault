@@ -10,24 +10,26 @@ import (
 	"time"
 
 	"github.com/teliaz/dot-vault/internal/config"
+	"github.com/teliaz/dot-vault/internal/orgs"
 	"github.com/teliaz/dot-vault/internal/store"
 )
 
 type repoStatusRow struct {
-	Organization   string
-	Repo           string
-	EnvFile        string
-	DriftStatus    string
-	BackupStatus   string
-	ImportedAt     string
-	BackupAt       string
-	CurrentAt      string
-	RemoteURL      string
-	GitPresent     bool
-	EnvPresent     bool
-	StoreMissing   bool
-	RepositoryOnly bool
-	DiffSummary    string
+	Organization     string
+	Repo             string
+	EnvFile          string
+	DriftStatus      string
+	BackupStatus     string
+	ImportedAt       string
+	BackupAt         string
+	CurrentAt        string
+	RemoteURL        string
+	GitPresent       bool
+	EnvPresent       bool
+	EnvSuggestedFrom string
+	StoreMissing     bool
+	RepositoryOnly   bool
+	DiffSummary      string
 }
 
 func collectRepoStatusRows(ctx context.Context, app *appContext, orgName string, repoFilter string) ([]repoStatusRow, error) {
@@ -50,6 +52,13 @@ func collectRepoStatusRows(ctx context.Context, app *appContext, orgName string,
 	rowsByKey := map[string]repoStatusRow{}
 	for _, repo := range repos {
 		if len(repo.EnvFiles) == 0 {
+			suggestedRows := repoSuggestedEnvRows(org.Name, repo)
+			if len(suggestedRows) > 0 {
+				for _, row := range suggestedRows {
+					rowsByKey[statusRowKey(row.Repo, row.EnvFile)] = row
+				}
+				continue
+			}
 			rowsByKey[statusRowKey(repo.RelPath, "")] = repoStatusRow{
 				Organization:   org.Name,
 				Repo:           repo.RelPath,
@@ -109,7 +118,7 @@ func collectRepoStatusRows(ctx context.Context, app *appContext, orgName string,
 			continue
 		}
 		key := statusRowKey(metadata.Repository, metadata.EnvFile)
-		if _, exists := rowsByKey[key]; exists {
+		if existing, exists := rowsByKey[key]; exists && !existing.StoreMissing {
 			continue
 		}
 		delete(rowsByKey, statusRowKey(metadata.Repository, ""))
@@ -152,6 +161,39 @@ func collectRepoStatusRows(ctx context.Context, app *appContext, orgName string,
 		return rows[i].Repo < rows[j].Repo
 	})
 	return rows, nil
+}
+
+func repoSuggestedEnvRows(orgName string, repo orgs.Repository) []repoStatusRow {
+	rows := make([]repoStatusRow, 0, len(repo.SampleEnvFiles))
+	seen := map[string]struct{}{}
+	for _, sample := range repo.SampleEnvFiles {
+		envFile := orgs.SuggestedEnvFileName(sample.Name)
+		if envFile == "" {
+			continue
+		}
+		if _, exists := seen[envFile]; exists {
+			continue
+		}
+		seen[envFile] = struct{}{}
+		rows = append(rows, repoStatusRow{
+			Organization:     orgName,
+			Repo:             repo.RelPath,
+			EnvFile:          envFile,
+			DriftStatus:      "env_suggested",
+			BackupStatus:     "none",
+			CurrentAt:        "create from " + sample.Name,
+			GitPresent:       true,
+			EnvPresent:       false,
+			EnvSuggestedFrom: sample.Name,
+			StoreMissing:     true,
+			RepositoryOnly:   true,
+			DiffSummary:      "create from " + sample.Name,
+		})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].EnvFile < rows[j].EnvFile
+	})
+	return rows
 }
 
 func applyStoredMetadata(row *repoStatusRow, metadata store.Metadata) {

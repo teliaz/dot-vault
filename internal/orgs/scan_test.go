@@ -23,6 +23,7 @@ func TestScanDiscoversRepositoriesAndEnvFiles(t *testing.T) {
 	writeFile(t, filepath.Join(appRepo, ".env"), "APP_SECRET=one\n")
 	writeFile(t, filepath.Join(appRepo, ".env.local"), "LOCAL_SECRET=two\n")
 	writeFile(t, filepath.Join(appRepo, ".env.example"), "SAMPLE=no\n")
+	writeFile(t, filepath.Join(appRepo, ".env_sample"), "SAMPLE=underscore\n")
 	writeFile(t, filepath.Join(appRepo, ".gitignore"), ".env.example\n")
 	writeFile(t, filepath.Join(nestedRepo, ".env.production"), "API_SECRET=three\n")
 
@@ -56,10 +57,20 @@ func TestScanDiscoversRepositoriesAndEnvFiles(t *testing.T) {
 	for _, envFile := range repos[0].EnvFiles {
 		envNames = append(envNames, envFile.Name)
 	}
-	want := []string{".env", ".env.example", ".env.local"}
+	want := []string{".env", ".env.local"}
 	for i := range want {
 		if envNames[i] != want[i] {
 			t.Fatalf("envNames = %#v, want %#v", envNames, want)
+		}
+	}
+	sampleNames := []string{}
+	for _, sampleFile := range repos[0].SampleEnvFiles {
+		sampleNames = append(sampleNames, sampleFile.Name)
+	}
+	sampleWant := []string{".env.example", ".env_sample"}
+	for i := range sampleWant {
+		if sampleNames[i] != sampleWant[i] {
+			t.Fatalf("sampleNames = %#v, want %#v", sampleNames, sampleWant)
 		}
 	}
 	if repos[1].RelPath != "team/api" {
@@ -67,12 +78,15 @@ func TestScanDiscoversRepositoriesAndEnvFiles(t *testing.T) {
 	}
 }
 
-func TestDiscoverEnvFilesExcludesSamplesUnlessIgnored(t *testing.T) {
+func TestDiscoverEnvFilesExcludesSamples(t *testing.T) {
 	t.Parallel()
 
 	repoRoot := t.TempDir()
 	writeFile(t, filepath.Join(repoRoot, ".env"), "SECRET=one\n")
 	writeFile(t, filepath.Join(repoRoot, ".env.example"), "SECRET=sample\n")
+	writeFile(t, filepath.Join(repoRoot, ".env_sample"), "SECRET=sample\n")
+	writeFile(t, filepath.Join(repoRoot, "sample.env"), "SECRET=sample\n")
+	writeFile(t, filepath.Join(repoRoot, ".gitignore"), ".env.example\n.env_sample\nsample.env\n")
 
 	envFiles, err := discoverEnvFiles(repoRoot)
 	if err != nil {
@@ -80,6 +94,36 @@ func TestDiscoverEnvFilesExcludesSamplesUnlessIgnored(t *testing.T) {
 	}
 	if len(envFiles) != 1 || envFiles[0].Name != ".env" {
 		t.Fatalf("envFiles = %#v, want only .env", envFiles)
+	}
+}
+
+func TestDiscoverSampleEnvFiles(t *testing.T) {
+	t.Parallel()
+
+	repoRoot := t.TempDir()
+	writeFile(t, filepath.Join(repoRoot, ".env"), "SECRET=one\n")
+	writeFile(t, filepath.Join(repoRoot, ".env.example"), "SECRET=sample\n")
+	writeFile(t, filepath.Join(repoRoot, ".env.local.sample"), "LOCAL=sample\n")
+	writeFile(t, filepath.Join(repoRoot, ".env_sample"), "SECRET=sample\n")
+	writeFile(t, filepath.Join(repoRoot, "sample.env"), "SECRET=sample\n")
+
+	sampleFiles, err := discoverSampleEnvFiles(repoRoot)
+	if err != nil {
+		t.Fatalf("discoverSampleEnvFiles() error = %v", err)
+	}
+
+	sampleNames := []string{}
+	for _, sampleFile := range sampleFiles {
+		sampleNames = append(sampleNames, sampleFile.Name)
+	}
+	want := []string{".env.example", ".env.local.sample", ".env_sample", "sample.env"}
+	for i := range want {
+		if sampleNames[i] != want[i] {
+			t.Fatalf("sampleNames = %#v, want %#v", sampleNames, want)
+		}
+	}
+	if suggested := SuggestedEnvFileName(".env.local.sample"); suggested != ".env.local" {
+		t.Fatalf("SuggestedEnvFileName() = %q, want .env.local", suggested)
 	}
 }
 

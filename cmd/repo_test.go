@@ -159,3 +159,58 @@ func TestCollectRepoStatusRowsIncludesRepositoriesWithoutEnvFiles(t *testing.T) 
 		t.Fatalf("DriftStatus = %q, want no_env", row.DriftStatus)
 	}
 }
+
+func TestCollectRepoStatusRowsSuggestsEnvFromSample(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	repoRoot := filepath.Join(tempDir, "repos")
+	storeRoot := filepath.Join(tempDir, "store")
+	configPath := filepath.Join(tempDir, "config.json")
+	if err := os.MkdirAll(filepath.Join(repoRoot, "sampled-repo", ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir sampled repo: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "sampled-repo", ".env_sample"), []byte("API_KEY=\n"), 0o600); err != nil {
+		t.Fatalf("write sample env: %v", err)
+	}
+
+	manager := config.NewManagerWithPath(configPath)
+	if err := manager.Save(&config.Config{
+		Version:            1,
+		ActiveOrganization: "acme",
+		Organizations: map[string]config.Organization{
+			"acme": {Name: "acme", RepoRoot: repoRoot, StoreRoot: storeRoot},
+		},
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	app := &appContext{
+		configManager: manager,
+		orgService:    orgs.NewService(manager),
+		storeService:  store.NewService(manager, crypto.NewKeyProvider("dot-vault-test")),
+	}
+	rows, err := collectRepoStatusRows(context.Background(), app, "acme", "")
+	if err != nil {
+		t.Fatalf("collectRepoStatusRows() error = %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("len(rows) = %d, want 1: %#v", len(rows), rows)
+	}
+	row := rows[0]
+	if !row.RepositoryOnly {
+		t.Fatalf("RepositoryOnly = false, want true")
+	}
+	if row.Repo != "sampled-repo" || row.EnvFile != ".env" {
+		t.Fatalf("row = %#v, want sampled-repo/.env suggestion", row)
+	}
+	if row.DriftStatus != "env_suggested" {
+		t.Fatalf("DriftStatus = %q, want env_suggested", row.DriftStatus)
+	}
+	if row.EnvSuggestedFrom != ".env_sample" {
+		t.Fatalf("EnvSuggestedFrom = %q, want .env_sample", row.EnvSuggestedFrom)
+	}
+	if row.CurrentAt != "create from .env_sample" {
+		t.Fatalf("CurrentAt = %q, want create from .env_sample", row.CurrentAt)
+	}
+}

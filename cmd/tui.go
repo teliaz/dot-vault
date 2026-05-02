@@ -346,20 +346,21 @@ func toTUIRows(statusRows []repoStatusRow) []tui.Row {
 	rows := make([]tui.Row, 0, len(statusRows))
 	for _, row := range statusRows {
 		rows = append(rows, tui.Row{
-			Organization:   row.Organization,
-			Repo:           row.Repo,
-			EnvFile:        row.EnvFile,
-			DriftStatus:    row.DriftStatus,
-			BackupStatus:   row.BackupStatus,
-			ImportedAt:     row.ImportedAt,
-			BackupAt:       row.BackupAt,
-			CurrentAt:      row.CurrentAt,
-			RemoteURL:      row.RemoteURL,
-			GitPresent:     row.GitPresent,
-			EnvPresent:     row.EnvPresent,
-			StoreMissing:   row.StoreMissing,
-			RepositoryOnly: row.RepositoryOnly,
-			DiffSummary:    row.DiffSummary,
+			Organization:     row.Organization,
+			Repo:             row.Repo,
+			EnvFile:          row.EnvFile,
+			DriftStatus:      row.DriftStatus,
+			BackupStatus:     row.BackupStatus,
+			ImportedAt:       row.ImportedAt,
+			BackupAt:         row.BackupAt,
+			CurrentAt:        row.CurrentAt,
+			RemoteURL:        row.RemoteURL,
+			GitPresent:       row.GitPresent,
+			EnvPresent:       row.EnvPresent,
+			EnvSuggestedFrom: row.EnvSuggestedFrom,
+			StoreMissing:     row.StoreMissing,
+			RepositoryOnly:   row.RepositoryOnly,
+			DiffSummary:      row.DiffSummary,
 		})
 	}
 	return rows
@@ -424,6 +425,9 @@ func enrichRowsWithDiffSummaries(cmd *cobra.Command, app *appContext, orgName st
 }
 
 func diffSummaryForRow(cmd *cobra.Command, app *appContext, orgName string, row tui.Row) (string, error) {
+	if row.EnvSuggestedFrom != "" {
+		return "create from " + row.EnvSuggestedFrom, nil
+	}
 	if row.StoreMissing {
 		return "not stored", nil
 	}

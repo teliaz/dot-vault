@@ -24,20 +24,21 @@ type Dependency struct {
 }
 
 type Row struct {
-	Organization   string
-	Repo           string
-	EnvFile        string
-	DriftStatus    string
-	BackupStatus   string
-	ImportedAt     string
-	BackupAt       string
-	CurrentAt      string
-	RemoteURL      string
-	GitPresent     bool
-	EnvPresent     bool
-	StoreMissing   bool
-	RepositoryOnly bool
-	DiffSummary    string
+	Organization     string
+	Repo             string
+	EnvFile          string
+	DriftStatus      string
+	BackupStatus     string
+	ImportedAt       string
+	BackupAt         string
+	CurrentAt        string
+	RemoteURL        string
+	GitPresent       bool
+	EnvPresent       bool
+	EnvSuggestedFrom string
+	StoreMissing     bool
+	RepositoryOnly   bool
+	DiffSummary      string
 }
 
 type Actions struct {
@@ -244,6 +245,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.move(1)
 		case "k", "up":
 			m.move(-1)
+		case "pgdown":
+			m.pageMove(1)
+		case "pgup":
+			m.pageMove(-1)
 		case "g", "home":
 			m.jumpStart()
 		case "G", "end":
@@ -556,6 +561,10 @@ func (m *Model) startAction(action string) {
 		return
 	}
 	if row.RepositoryOnly || row.EnvFile == "" {
+		if row.EnvSuggestedFrom != "" {
+			m.statusMessage = fmt.Sprintf("create %s from %s before file actions", row.EnvFile, row.EnvSuggestedFrom)
+			return
+		}
 		m.statusMessage = "selected repository has no env file"
 		return
 	}
@@ -697,6 +706,10 @@ func (m Model) startDiff() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if row.RepositoryOnly || row.EnvFile == "" {
+		if row.EnvSuggestedFrom != "" {
+			m.statusMessage = fmt.Sprintf("create %s from %s before diffing", row.EnvFile, row.EnvSuggestedFrom)
+			return m, nil
+		}
 		m.statusMessage = "selected repository has no env file"
 		return m, nil
 	}
@@ -812,6 +825,20 @@ func (m *Model) move(delta int) {
 	}
 }
 
+func (m *Model) pageMove(direction int) {
+	if direction == 0 {
+		return
+	}
+	step := m.visibleRowLimit()
+	if step < 1 {
+		step = 1
+	}
+	if direction < 0 {
+		step = -step
+	}
+	m.move(step)
+}
+
 func (m *Model) jumpStart() {
 	if m.focus == "orgs" {
 		m.selectedOrg = 0
@@ -839,7 +866,7 @@ func (m *Model) applyFilter() {
 		if row.RepositoryOnly && !m.showAllRepos {
 			continue
 		}
-		search := row.Organization + " " + row.Repo + " " + row.EnvFile + " " + row.DriftStatus + " " + row.BackupStatus + " " + row.DiffSummary + " " + row.RemoteURL
+		search := row.Organization + " " + row.Repo + " " + row.EnvFile + " " + row.DriftStatus + " " + row.BackupStatus + " " + row.DiffSummary + " " + row.RemoteURL + " " + row.EnvSuggestedFrom
 		if filter == "" || strings.Contains(strings.ToLower(search), filter) {
 			m.filtered = append(m.filtered, index)
 		}
@@ -964,10 +991,7 @@ func (m Model) renderRows(width int) string {
 		return mutedStyle.Render("No env files match the current filter.")
 	}
 
-	limit := 12
-	if m.height > 0 {
-		limit = max(6, m.height-16)
-	}
+	limit := m.visibleRowLimit()
 	start := 0
 	if m.selected >= limit {
 		start = m.selected - limit + 1
@@ -981,27 +1005,34 @@ func (m Model) renderRows(width int) string {
 			width,
 			row.Repo,
 			row.envLabel(),
-			row.DriftStatus,
+			row.driftLabel(),
 			boolLabel(row.GitPresent),
 			row.BackupStatus,
 			row.BackupAt,
-			emptyAs(row.DiffSummary, "locked"),
+			row.compareLabel(),
 		)
 		if visibleIndex == m.selected && m.focus == "files" {
 			line = fixedColumnsSelected(
 				width,
 				row.Repo,
 				row.envLabel(),
-				row.DriftStatus,
+				row.driftLabel(),
 				boolLabel(row.GitPresent),
 				row.BackupStatus,
 				row.BackupAt,
-				emptyAs(row.DiffSummary, "locked"),
+				row.compareLabel(),
 			)
 		}
 		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func (m Model) visibleRowLimit() int {
+	if m.height <= 0 {
+		return 12
+	}
+	return max(6, m.height-16)
 }
 
 func (m Model) renderDetail(width int) string {
@@ -1010,6 +1041,21 @@ func (m Model) renderDetail(width int) string {
 		return detailBoxStyle.Width(contentWidth).Render("No selected env file.")
 	}
 	row := m.rows[m.filtered[m.selected]]
+	if row.EnvSuggestedFrom != "" {
+		detail := fmt.Sprintf(
+			"%s/%s\norg: %s\ngit: %s  env: suggested from %s\nremote: %s\ncurrent: %s missing\nimported: never\nlast backup: never\ncomparison: create %s from %s",
+			row.Repo,
+			row.EnvFile,
+			emptyAs(row.Organization, "default"),
+			boolLabel(row.GitPresent),
+			row.EnvSuggestedFrom,
+			emptyAs(row.RemoteURL, "unknown"),
+			row.EnvFile,
+			row.EnvFile,
+			row.EnvSuggestedFrom,
+		)
+		return detailBoxStyle.Width(contentWidth).Render(detail)
+	}
 	if row.RepositoryOnly || row.EnvFile == "" {
 		detail := fmt.Sprintf(
 			"%s\norg: %s\ngit: %s  env: none\nremote: %s\ncurrent: no visible env files\nimported: never\nlast backup: never\ncomparison: no env file",
@@ -1037,10 +1083,27 @@ func (m Model) renderDetail(width int) string {
 }
 
 func (r Row) envLabel() string {
+	if r.EnvSuggestedFrom != "" {
+		return emptyAs(r.EnvFile, ".env")
+	}
 	if r.RepositoryOnly || r.EnvFile == "" {
 		return "none"
 	}
 	return r.EnvFile
+}
+
+func (r Row) compareLabel() string {
+	if r.EnvSuggestedFrom != "" {
+		return "sample"
+	}
+	return emptyAs(r.DiffSummary, "locked")
+}
+
+func (r Row) driftLabel() string {
+	if r.DriftStatus == "env_suggested" {
+		return "suggested"
+	}
+	return r.DriftStatus
 }
 
 func (m Model) renderDiff(width int) string {
@@ -1310,37 +1373,73 @@ func tableValues(repo string, env string, drift string, git string, backup strin
 
 func tableLayout(width int) tableColumns {
 	columns := tableColumns{
-		repo:     10,
-		env:      6,
+		repo:     12,
+		env:      10,
 		drift:    7,
 		git:      3,
 		backup:   6,
-		backupAt: 5,
-		compare:  5,
+		backupAt: 8,
+		compare:  6,
 	}
+	columns = shrinkTableLayout(columns, width)
 	preferred := tableColumns{
-		repo:     24,
-		env:      13,
-		drift:    12,
-		git:      5,
+		repo:     32,
+		env:      16,
+		drift:    9,
+		git:      3,
 		backup:   12,
-		backupAt: 19,
+		backupAt: 24,
 		compare:  18,
 	}
 
 	available := max(0, width-6-tableWidth(columns))
-	available = growColumn(&columns.drift, preferred.drift, available)
-	available = growColumn(&columns.git, preferred.git, available)
-	available = growColumn(&columns.backup, preferred.backup, available)
 	available = growColumn(&columns.repo, preferred.repo, available)
-	available = growColumn(&columns.env, preferred.env, available)
 	available = growColumn(&columns.backupAt, preferred.backupAt, available)
 	available = growColumn(&columns.compare, preferred.compare, available)
+	available = growColumn(&columns.backup, preferred.backup, available)
+	available = growColumn(&columns.env, preferred.env, available)
+	available = growColumn(&columns.drift, preferred.drift, available)
+	available = growColumn(&columns.git, preferred.git, available)
 
 	if available > 0 {
-		columns.drift += (available + 1) / 2
-		columns.git += available / 2
+		columns.repo += (available + 1) / 2
+		columns.backupAt += available / 2
 	}
+	return columns
+}
+
+func shrinkTableLayout(columns tableColumns, width int) tableColumns {
+	target := max(0, width-6)
+	if tableWidth(columns) <= target {
+		return columns
+	}
+
+	floors := tableColumns{
+		repo:     8,
+		env:      6,
+		drift:    5,
+		git:      2,
+		backup:   5,
+		backupAt: 5,
+		compare:  5,
+	}
+	needed := tableWidth(columns) - target
+	shrinkColumn := func(column *int, floor int) {
+		if needed <= 0 || *column <= floor {
+			return
+		}
+		reduction := min(*column-floor, needed)
+		*column -= reduction
+		needed -= reduction
+	}
+
+	shrinkColumn(&columns.repo, floors.repo)
+	shrinkColumn(&columns.backupAt, floors.backupAt)
+	shrinkColumn(&columns.env, floors.env)
+	shrinkColumn(&columns.backup, floors.backup)
+	shrinkColumn(&columns.drift, floors.drift)
+	shrinkColumn(&columns.compare, floors.compare)
+	shrinkColumn(&columns.git, floors.git)
 	return columns
 }
 
@@ -1404,7 +1503,7 @@ func statusStyle(status string) lipgloss.Style {
 	switch status {
 	case "clean", "backed_up":
 		return cleanStyle
-	case "drift", "backup_due", "env_missing":
+	case "drift", "backup_due", "env_missing", "env_suggested", "suggested":
 		return warnStyle
 	case "missing", "none", "repo_missing", "no_env":
 		return missingStyle

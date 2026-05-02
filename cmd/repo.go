@@ -49,6 +49,17 @@ func newRepoScanCommand(app *appContext) *cobra.Command {
 			for _, repo := range repos {
 				fmt.Fprintf(cmd.OutOrStdout(), "%s\n", repo.RelPath)
 				if len(repo.EnvFiles) == 0 {
+					if len(repo.SampleEnvFiles) > 0 {
+						for _, sampleFile := range repo.SampleEnvFiles {
+							fmt.Fprintf(
+								cmd.OutOrStdout(),
+								"  sample %s  suggests %s\n",
+								sampleFile.RelPath,
+								orgs.SuggestedEnvFileName(sampleFile.Name),
+							)
+						}
+						continue
+					}
 					fmt.Fprintln(cmd.OutOrStdout(), "  no env files")
 					continue
 				}
@@ -88,6 +99,17 @@ func newRepoStatusCommand(app *appContext) *cobra.Command {
 			}
 			for _, row := range rows {
 				if row.StoreMissing {
+					if row.EnvSuggestedFrom != "" {
+						fmt.Fprintf(
+							cmd.OutOrStdout(),
+							"%s/%s: env_suggested from=%s current=missing git=%t backup=none\n",
+							row.Repo,
+							row.EnvFile,
+							row.EnvSuggestedFrom,
+							row.GitPresent,
+						)
+						continue
+					}
 					fmt.Fprintf(
 						cmd.OutOrStdout(),
 						"%s/%s: missing current=%s git=%t backup=none\n",
